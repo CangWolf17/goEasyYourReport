@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "fields": [
+    {
+      "name": "full_name",
+      "label": "姓名",
+      "required": true,
+      "source": "private"
+    },
+    {
+      "name": "student_id",
+      "label": "学号",
+      "required": true,
+      "source": "private"
+    },
+    {
+      "name": "completion_date",
+      "label": "完成日期",
+      "required": true,
+      "source": "system_date",
+      "format": "%Y年%m月%d日"
+    }
+  ],
+  "bindings": [
+    {
+      "field": "full_name",
+      "region": "cover",
+      "anchor_text": "姓 名：",
+      "mode": "replace_after_label"
+    },
+    {
+      "field": "student_id",
+      "region": "cover",
+      "anchor_text": "学 号：",
+      "mode": "replace_after_label"
+    },
+    {
+      "field": "completion_date",
+      "region": "cover",
+      "anchor_text": "完成日期：",
+      "mode": "replace_after_label"
+    }
+  ],
+  "availability": {
+    "full_name": "unknown",
+    "student_id": "unknown",
+    "completion_date": "computed"
+  },
+  "injection": {
+    "provider_script": "./scripts/list_private_fields.py",
+    "injector_script": "./scripts/inject_private_fields.py",
+    "agent_can_read_values": false
+  }
+}

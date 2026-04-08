@@ -1,0 +1,17 @@
+{
+  "base": "github-light",
+  "roles": {
+    "background": "#ffffff",
+    "header_bg": "#f6f8fa",
+    "header_fg": "#24292f",
+    "border": "#d0d7de",
+    "default": "#24292f",
+    "keyword": "#cf222e",
+    "string": "#0a3069",
+    "comment": "#6e7781",
+    "number": "#0550ae",
+    "function": "#8250df",
+    "type": "#953800",
+    "operator": "#24292f"
+  }
+}

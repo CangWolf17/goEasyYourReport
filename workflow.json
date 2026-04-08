@@ -1,0 +1,60 @@
+{
+  "version": "1.0",
+  "mode": "semi-auto",
+  "project": {
+    "name": "report-workflow-project",
+    "language": "zh-CN"
+  },
+  "paths": {
+    "user": "./user",
+    "templates": "./templates",
+    "config": "./config",
+    "src": "./src",
+    "tests": "./tests",
+    "assets_input": "./assets/input",
+    "assets_generated": "./assets/generated",
+    "docs": "./docs",
+    "out": "./out",
+    "logs": "./logs",
+    "temp": "./temp"
+  },
+  "documents": {
+    "body_source": "./docs/report_body.md",
+    "preview_output": "./out/preview.docx",
+    "redacted_output": "./out/redacted.docx",
+    "private_output": "./out/private.docx"
+  },
+  "templates": {
+    "main_template": "./templates/template.user.docx",
+    "reference_template": "./templates/reference.user.docx",
+    "sample_template": "./templates/template.sample.docx",
+    "sample_reference": "./templates/reference.sample.docx"
+  },
+  "config_files": {
+    "template_plan": "./config/template.plan.json",
+    "field_binding": "./config/field.binding.json",
+    "user_profile": "./user/user.md",
+    "writing_profile": "./user/soul.md"
+  },
+  "rendering": {
+    "code_blocks": {
+      "theme": "github-light",
+      "theme_override": "./config/code-theme.user.json"
+    }
+  },
+  "privacy": {
+    "agent_can_read_secret_values": false,
+    "field_name_provider": "./scripts/list_private_fields.py",
+    "field_injector": "./scripts/inject_private_fields.py"
+  },
+  "cleanup": {
+    "keep_intermediate_artifacts": true,
+    "recyclable_dirs": [
+      "./temp",
+      "./logs"
+    ],
+    "protected_outputs": [
+      "./out/private.docx"
+    ]
+  }
+}

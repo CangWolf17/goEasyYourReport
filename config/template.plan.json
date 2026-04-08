@@ -1,0 +1,97 @@
+{
+  "version": "1.0",
+  "selection": {
+    "primary_template": "./templates/template.user.docx",
+    "reference_template": "./templates/reference.user.docx",
+    "preview_output": "./out/preview.docx",
+    "redacted_output": "./out/redacted.docx",
+    "private_output": "./out/private.docx"
+  },
+  "body_source": {
+    "path": "./docs/report_body.md",
+    "format": "markdown"
+  },
+  "regions": {
+    "locked": [
+      {
+        "id": "cover",
+        "reason": "template-scan",
+        "start_paragraph": 0,
+        "end_paragraph": 4
+      }
+    ],
+    "fillable": [
+      {
+        "id": "body_main",
+        "source": "./docs/report_body.md",
+        "start_paragraph": 5,
+        "end_paragraph": 10
+      }
+    ]
+  },
+  "anchors": {
+    "region_detection_mode": "template-scan",
+    "fallback_strategy": "user-confirmation-required",
+    "headings": [
+      {
+        "kind": "heading",
+        "paragraph": 5,
+        "style": "Heading 1",
+        "text": "1 Overview"
+      },
+      {
+        "kind": "heading",
+        "paragraph": 7,
+        "style": "Heading 1",
+        "text": "2 Details"
+      },
+      {
+        "kind": "heading",
+        "paragraph": 9,
+        "style": "Heading 1",
+        "text": "3 References"
+      }
+    ],
+    "field_candidates": [
+      {
+        "kind": "field_candidate",
+        "paragraph": 1,
+        "style": "Normal",
+        "text": "姓 名："
+      },
+      {
+        "kind": "field_candidate",
+        "paragraph": 2,
+        "style": "Normal",
+        "text": "学 号："
+      },
+      {
+        "kind": "field_candidate",
+        "paragraph": 3,
+        "style": "Normal",
+        "text": "完成日期："
+      }
+    ],
+    "region_candidates": [
+      {
+        "kind": "boundary",
+        "paragraph": 5,
+        "reason": "first-heading-like-paragraph",
+        "locked_before": "cover",
+        "fillable_after": "body_main"
+      }
+    ]
+  },
+  "field_binding": {
+    "path": "./config/field.binding.json"
+  },
+  "preferences": {
+    "user_profile": "./user/user.md",
+    "writing_profile": "./user/soul.md"
+  },
+  "status": {
+    "template_scanned": true,
+    "preview_confirmed": false,
+    "field_binding_confirmed": false
+  }
+}
