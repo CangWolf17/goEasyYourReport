@@ -377,6 +377,7 @@ class ConfirmationPackageTests(unittest.TestCase):
         from scripts import workflow_agent
 
         project_root = self.create_project()
+        self.set_ready_to_write(project_root)
         build_payload = {
             "redacted": str(project_root / "out" / "redacted.docx"),
             "integrity": {

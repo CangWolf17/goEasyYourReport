@@ -12,7 +12,15 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
+from scripts._shared import (
+    PROJECT_ROOT,
+    dump_json,
+    emit_json,
+    import_docx,
+    load_json,
+    project_path,
+    run_python_script,
+)
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -51,6 +59,8 @@ FALLBACK_STYLE_SOURCES = {
 STYLE_REFERENCE_ATTRIBUTES = ("basedOn", "next", "link")
 STYLE_XML_DECLARATION_PATTERN = re.compile(rb"^<\?xml[^?]*\?>")
 STYLE_XML_ROOT_PATTERN = re.compile(rb"<w:styles\b[^>]*>")
+STYLE_XML_ANY_ROOT_PATTERN = re.compile(rb"<(?:\w+:)?styles\b[^>]*>")
+IGNORABLE_PATTERN = re.compile(rb'\b(?:\w+:)?Ignorable="([^"]+)"')
 STYLE_XML_NAMESPACES = {
     "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -234,7 +244,38 @@ def serialize_styles_xml(styles_root: ET.Element, *, original_xml: bytes) -> byt
             + serialized[serialized_root.end() :]
         )
 
+    serialized = ensure_ignorable_namespace_declarations(serialized)
     return serialized
+
+
+def ensure_ignorable_namespace_declarations(serialized: bytes) -> bytes:
+    root_match = STYLE_XML_ANY_ROOT_PATTERN.search(serialized)
+    if root_match is None:
+        return serialized
+
+    root_tag = root_match.group(0).decode("utf-8")
+    ignorable_match = IGNORABLE_PATTERN.search(root_match.group(0))
+    if ignorable_match is None:
+        return serialized
+
+    additions: list[str] = []
+    for prefix in ignorable_match.group(1).decode("utf-8").split():
+        if f"xmlns:{prefix}=" in root_tag:
+            continue
+        namespace = STYLE_XML_NAMESPACES.get(prefix)
+        if namespace is None:
+            continue
+        additions.append(f' xmlns:{prefix}="{namespace}"')
+
+    if not additions:
+        return serialized
+
+    patched_root = (root_tag[:-1] + "".join(additions) + ">").encode("utf-8")
+    return (
+        serialized[: root_match.start()]
+        + patched_root
+        + serialized[root_match.end() :]
+    )
 
 
 def replace_or_append_style(
@@ -436,6 +477,24 @@ def apply_recommendation(plan_path: Path, recommendation: dict[str, object]) -> 
     dump_json(plan_path, plan)
 
 
+def ensure_initialized_workspace(project_root: Path, plan_path: Path) -> None:
+    if plan_path.exists():
+        return
+
+    init_result = run_python_script(
+        PROJECT_ROOT / "scripts" / "init_project.py",
+        "--project-root",
+        str(project_root),
+    )
+    if init_result["returncode"] != 0:
+        details = (
+            init_result.get("stderr")
+            or init_result.get("stdout")
+            or "init_project.py failed while bootstrapping workspace"
+        )
+        raise SystemExit(str(details))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate and optionally apply a recommended template with backfilled styles."
@@ -455,6 +514,7 @@ def main() -> int:
 
     project_root = Path(args.project_root).resolve()
     plan_path = project_path(project_root, args.plan)
+    ensure_initialized_workspace(project_root, plan_path)
     plan = load_json(plan_path)
     user_template = project_path(project_root, args.user_template)
     donor_template = project_path(project_root, args.donor_template)
