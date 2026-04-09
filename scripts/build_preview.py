@@ -117,6 +117,7 @@ def build_summary(
             "ready_to_write": task_contract["task"]["ready_to_write"],
             "next_step": task_contract["runtime"]["next_step"],
         },
+        "report_decisions": task_contract.get("decisions", {}),
         "regions": plan.get("regions", {}),
         "anchors": anchors,
         "field_binding": {

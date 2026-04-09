@@ -29,7 +29,13 @@ def default_task_contract() -> dict[str, object]:
             "assets_dir": "./assets/input",
             "evidence_dir": "./materials/evidence",
         },
-        "decisions": {},
+        "decisions": {
+            "toc_enabled": None,
+            "references_required": None,
+            "appendix_enabled": None,
+            "agent_may_write_explanatory_text": True,
+            "default_template_protected": True,
+        },
         "runtime": {
             "workflow_config": "./workflow.json",
             "template_plan": "./config/template.plan.json",

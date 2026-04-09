@@ -35,6 +35,13 @@ class TaskContractTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def load_preview_summary(self, project_root: Path) -> dict[str, object]:
+        return json.loads(
+            (project_root / "out" / "preview.summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
     def init_project(self, project_root: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -174,6 +181,32 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(updated["task"]["stage"], "redacted_built")
         self.assertEqual(updated["runtime"]["redacted_output"], "./out/redacted.docx")
         self.assertEqual(updated["runtime"]["next_step"], "verify")
+
+    def test_task_contract_seeds_high_level_decision_defaults(self) -> None:
+        project_root = self.create_project()
+
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        decisions = self.load_task_yaml(project_root)["decisions"]
+        self.assertIsNone(decisions["toc_enabled"])
+        self.assertIsNone(decisions["references_required"])
+        self.assertIsNone(decisions["appendix_enabled"])
+        self.assertTrue(decisions["agent_may_write_explanatory_text"])
+        self.assertTrue(decisions["default_template_protected"])
+
+    def test_preview_summary_includes_high_level_report_decisions(self) -> None:
+        project_root = self.create_project()
+
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        summary = self.load_preview_summary(project_root)
+        self.assertIn("report_decisions", summary)
+        self.assertIsNone(summary["report_decisions"]["toc_enabled"])
+        self.assertTrue(
+            summary["report_decisions"]["default_template_protected"]
+        )
 
 
 if __name__ == "__main__":
