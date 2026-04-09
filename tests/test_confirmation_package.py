@@ -89,6 +89,27 @@ class ConfirmationPackageTests(unittest.TestCase):
                 text,
             )
 
+    def test_repo_docs_describe_report_task_contract(self) -> None:
+        install_text = (PROJECT_ROOT / "INSTALL.md").read_text(encoding="utf-8")
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (install_text, skill_text, agents_text, readme_text):
+            self.assertIn("report.task.yaml", text)
+            self.assertIn("agent-driven", text)
+            self.assertIn("default template", text)
+
+    def test_repo_docs_describe_ready_to_write_gate(self) -> None:
+        install_text = (PROJECT_ROOT / "INSTALL.md").read_text(encoding="utf-8")
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (install_text, skill_text, agents_text, readme_text):
+            self.assertIn("ready_to_write", text)
+            self.assertIn("Build blocked", text)
+
     def test_init_project_copies_code_theme_sample(self) -> None:
         project_root = self.create_project()
 

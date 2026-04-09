@@ -1,9 +1,10 @@
 # goEasyYourReport
 
-Document-first Python workflow skeleton for generating reviewable DOCX reports from a template, Markdown body content, and private field bindings.
+Agent-driven report framework for building reviewable DOCX reports from high-level task inputs, a protected template baseline, Markdown body content, and private field bindings.
 
 ## What This Repo Does
 
+- uses `report.task.yaml` as the workspace entrypoint for task state, handoff, and runtime pointers
 - scans a DOCX template into locked and fillable regions
 - runs a semantic template scan, then builds `preview.docx` plus `preview.summary.json` for confirmation
 - builds `redacted.docx` from `docs/report_body.md`
@@ -27,6 +28,15 @@ This repo uses `uv` for environment management.
 uv sync
 ```
 
+## Workspace Contract
+
+Agents should treat this repo as an agent-driven framework workspace, not as a loose workflow bundle.
+
+- `report.task.yaml` is the primary task book and handoff file.
+- `workflow.json` remains the stable framework runtime contract.
+- The default template is protected. Agents should express high-level decisions through `report.task.yaml` instead of rewriting the default template.
+- `task.ready_to_write` is the formal gate for report generation.
+
 ## Agent Entry Point
 
 Use `scripts/workflow_agent.py` for normal agent work. It is the stable façade over the lower-level workflow scripts.
@@ -48,6 +58,8 @@ Return codes:
 
 Build success now requires a valid DOCX package. If the DOCX integrity gate fails, the façade returns `kind=docx_integrity_error` and the agent must stop before `verify` or `inject`.
 
+Build blocked until report task is `ready_to_write`.
+
 Before build, the workflow may also stop for semantic style recommendation before build if the template is missing required semantic styles or outline metadata.
 
 Run it with:
@@ -66,6 +78,9 @@ uv run python scripts\workflow_agent.py inject --project-root . --source temp\pr
 
 ## Important Behavior
 
+- `report.task.yaml` is the durable agent handoff contract.
+- Build blocked until `report.task.yaml` marks the task as `ready_to_write`.
+- The default template is a protected baseline; adjust high-level report decisions before touching template assets.
 - `preview.docx` is for confirmation, not final delivery.
 - `build` does not count as successful unless `out/redacted.docx` passes the repo-owned DOCX integrity gate.
 - `docx_integrity_error` is a blocking error, not a soft handoff; fix it before `verify` or `inject`.

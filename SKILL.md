@@ -1,9 +1,10 @@
-# Report Workflow Skill
+# Report Agent Framework Skill
 
 ## Purpose
-Use `scripts/workflow_agent.py` as the normal agent-facing entrypoint for this repo. The façade wraps project readiness, preview/build/verify, private injection, and cleanup. Lower-level scripts remain implementation details unless you are debugging a single stage.
+Use `scripts/workflow_agent.py` as the normal agent-facing entrypoint for this agent-driven report framework. Agents provide high-level materials and decisions; the framework handles preview/build/verify, private injection, and cleanup. Lower-level scripts remain implementation details unless you are debugging a single stage.
 
 ## Read First
+- `report.task.yaml`
 - `workflow.json`
 - `INSTALL.md`
 - `GUARDRAILS.md`
@@ -11,6 +12,12 @@ Use `scripts/workflow_agent.py` as the normal agent-facing entrypoint for this r
 - `user/soul.md`
 - `config/template.plan.json`
 - `config/field.binding.json`
+
+## Workspace Contract
+- `report.task.yaml` is the durable workspace entrypoint and handoff file.
+- Agents should update high-level task state and decisions there instead of keeping critical workflow state only in chat.
+- The default template is a protected baseline; express structure decisions through task state rather than rewriting the default template.
+- `build` is allowed only after the task is `ready_to_write`.
 
 ## Façade Contract
 Run the workflow with:
@@ -46,6 +53,11 @@ Return codes:
 - `0`: success, no handoff needed.
 - `1`: the action completed but the agent must stop for user confirmation or another handoff.
 - `2`: the action failed and must be fixed before retrying.
+
+## Ready-To-Write Contract
+- `report.task.yaml` owns the `ready_to_write` gate.
+- Build blocked until the report task is `ready_to_write`.
+- Agents should finish material collection and unresolved confirmations before attempting formal report generation.
 
 ## DOCX Integrity Contract
 - `build` success now requires the saved `out/redacted.docx` to pass the repo-owned DOCX integrity gate.
@@ -91,5 +103,6 @@ Use direct scripts only when you need to debug one stage, probe a specific behav
 ## Guardrails
 - Do not read or reopen `out/private.docx`.
 - Do not overwrite user templates silently.
+- Do not rewrite the default template as part of normal agent execution.
 - Do not treat preview generation as completion.
 - Do not inject private values until the build handoff is cleared.

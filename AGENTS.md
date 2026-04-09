@@ -1,33 +1,36 @@
 # AGENTS.md
 
 ## Scope and source of truth
-- This repo is a document-first Python workflow skeleton, not a normal app repo.
+- This repo is an agent-driven report framework workspace, not a normal app repo.
 - Normal agent-facing entrypoint is `scripts/workflow_agent.py`. Use it for prepare, preview, build, verify, inject, and cleanup.
 - Lower-level scripts in `scripts/` are implementation details. Use them directly only for stage-level debugging, bootstrap work, or when a task explicitly targets that script.
 - Verified root files now include `README.md`, `LICENSE`, `pyproject.toml`, `requirements.txt`, and `uv.lock`. There is still no verified `package.json`, `Makefile`, CI workflow, or `opencode.json` at the repo root.
 - The executable code lives in `scripts/`; `src/` is currently an empty placeholder.
-- Trust order: `workflow.json` -> `scripts/workflow_agent.py` -> `scripts/*.py` -> `tests/test_init_project.py` -> `INSTALL.md` / `GUARDRAILS.md` / `SKILL.md` -> generated files in `logs/` and `out/`.
+- Trust order: `report.task.yaml` -> `workflow.json` -> `scripts/workflow_agent.py` -> `scripts/*.py` -> `tests/test_init_project.py` -> `INSTALL.md` / `GUARDRAILS.md` / `SKILL.md` -> generated files in `logs/` and `out/`.
 - Generated artifacts can go stale after a copy/move. In this repo, `logs/init_report.json` and `logs/template_scan.json` still contain absolute paths from the previous location, so rerun the relevant scripts before trusting copied logs.
 
 ## Read these first
-1. `workflow.json`
-2. `INSTALL.md`
-3. `GUARDRAILS.md`
-4. `tests/test_init_project.py`
-5. `tests/test_confirmation_package.py`
-6. `scripts/workflow_agent.py`
-7. `scripts/init_project.py`, `scripts/scan_template.py`, `scripts/build_preview.py`, `scripts/build_report.py`, `scripts/inject_private_fields.py`, `scripts/verify_report.py`
+1. `report.task.yaml`
+2. `workflow.json`
+3. `INSTALL.md`
+4. `GUARDRAILS.md`
+5. `tests/test_init_project.py`
+6. `tests/test_confirmation_package.py`
+7. `scripts/workflow_agent.py`
+8. `scripts/init_project.py`, `scripts/scan_template.py`, `scripts/build_preview.py`, `scripts/build_report.py`, `scripts/inject_private_fields.py`, `scripts/verify_report.py`
 
 ## Workflow Agent Contract
 - Use `prepare` to refresh the workspace state. It covers initialization when needed, semantic template scan, private-field inspection, and preview rebuild.
 - Use `preview` to rebuild the confirmation package with style-gap confirmation and TOC / reference-block detection in preview.
 - Use `build` to generate `out/redacted.docx`, run a DOCX integrity gate, and surface render issues.
+- Build blocked until `report.task.yaml` marks the task as `ready_to_write`.
 - Use `verify` to check a DOCX against the current plan.
 - Use `inject` only after the build result is clean or the user has explicitly accepted any handoff.
 - Use `cleanup` only for recyclable artifacts.
 - The façade must emit JSON with `action`, `status`, `summary`, `artifacts`, `issues`, `warnings`, and `next_step`.
 - Return codes: `0` success, `1` handoff, `2` error.
 - Build success now requires a valid DOCX package; if the integrity gate fails, return `kind=docx_integrity_error` and stop before `verify` or `inject`.
+- The default template is a protected baseline; agents should change high-level report decisions before considering template edits.
 - Respect the repo semantic workflow: task/template decisions come first, repo defaults only apply when the task book and template leave the choice unspecified.
 - Unsupported fenced code languages must still render as styled fallbacks, but they must be reported as `kind=unsupported_code_language` and treated as a handoff before `inject`.
 - Failed image insertions must be reported as `kind=image_insert_failed` and treated as a handoff before `inject`.
@@ -36,6 +39,7 @@
 ## Verified repo facts that are easy to miss
 - Default mode is `semi-auto`; project language is `zh-CN` (`workflow.json`).
 - The project keeps all working state inside the repo: `docs/`, `templates/`, `config/`, `out/`, `logs/`, `temp/`, `user/`.
+- `scripts/init_project.py` now seeds `report.task.yaml`; treat it as the workspace task contract.
 - `workflow.json` marks `out/private.docx` as protected and `temp/` + `logs/` as recyclable.
 - `scripts/_shared.py` hard-fails document operations if `python-docx` is missing.
 - CLI scripts now emit ASCII-safe JSON on stdout via `scripts/_shared.py:emit_json`; UTF-8 stays the file-format contract for repo files and logs.
@@ -87,6 +91,7 @@ D:\Miniconda\python.exe -m py_compile scripts\__init__.py scripts\_shared.py scr
 - Treat this repo as a project workspace, not a single-report generator.
 - Keep intermediate artifacts unless the user explicitly asks to clean them.
 - Do not overwrite `templates/template.user.docx` or `templates/reference.user.docx` silently.
+- Do not rewrite the default template as part of normal agent execution.
 - Do not read or re-open `out/private.docx` in the agent flow.
 - If a template scan or preview looks wrong, inspect `config/template.plan.json` and rerun `scan_template.py` before changing generation code.
 - If field injection looks wrong, inspect `config/field.binding.json` before touching template logic.
