@@ -102,6 +102,23 @@ class WordFieldTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def add_extra_cover_page_break(self, project_root: Path) -> None:
+        from docx.enum.text import WD_BREAK
+
+        template_path = project_root / "templates" / "template.user.docx"
+        template = docx.Document(template_path)
+        anchor = next(
+            paragraph
+            for paragraph in template.paragraphs
+            if getattr(paragraph.style, "name", "") in {"Heading 1", "标题2"}
+        )
+        extra_break = anchor.insert_paragraph_before()
+        extra_break.add_run().add_break(WD_BREAK.PAGE)
+        template.save(template_path)
+
+        scan_result = self.run_completed(project_root, "scan_template.py")
+        self.assertEqual(scan_result.returncode, 0, msg=scan_result.stderr)
+
     def test_add_bookmark_wraps_target_range(self) -> None:
         from scripts._docx_fields import add_bookmark
 
@@ -306,6 +323,108 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn('TOC \\o "1-3"', toc_paragraph._p.xml)
         self.assertNotIn('TOC \\\\o "1-3"', toc_paragraph._p.xml)
 
+    def test_build_report_inserts_toc_page_before_body_when_no_placeholder_exists(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+
+        toc_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if " TOC " in paragraph._p.xml
+        )
+        body_heading_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if paragraph.style.name in {"标题2", "Heading 1"}
+        )
+
+        self.assertLess(toc_index, body_heading_index)
+        self.assertIn("w:type=\"page\"", redacted.paragraphs[toc_index - 1]._p.xml)
+        self.assertIn("w:type=\"page\"", redacted.paragraphs[toc_index + 1]._p.xml)
+
+    def test_build_report_inserts_toc_page_when_enabled_without_detection(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        plan_path = project_root / "config" / "template.plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        toc = plan.setdefault("semantics", {}).setdefault("toc", {})
+        toc["detected"] = False
+        toc["enabled"] = True
+        toc["needs_confirmation"] = False
+        toc["kind"] = "none"
+        toc["source"] = "manual"
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+
+        self.assertTrue(any(" TOC " in paragraph._p.xml for paragraph in redacted.paragraphs))
+
+    def test_build_report_reuses_existing_cover_page_break_for_inserted_toc(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+
+        body_heading_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if paragraph.style.name in {"标题2", "Heading 1"}
+        )
+        page_break_count = sum(
+            1
+            for paragraph in redacted.paragraphs[:body_heading_index]
+            if 'w:type="page"' in paragraph._p.xml
+        )
+
+        self.assertEqual(page_break_count, 2)
+
+    def test_build_report_collapses_consecutive_cover_page_breaks_around_inserted_toc(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        self.add_extra_cover_page_break(project_root)
+        self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+
+        body_heading_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if paragraph.style.name in {"标题2", "Heading 1"}
+        )
+        toc_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if " TOC " in paragraph._p.xml
+        )
+        page_break_indexes = [
+            index
+            for index, paragraph in enumerate(redacted.paragraphs[:body_heading_index])
+            if 'w:type="page"' in paragraph._p.xml
+        ]
+
+        self.assertEqual(len(page_break_indexes), 2)
+        self.assertGreater(toc_index, page_break_indexes[0])
+        self.assertLess(toc_index, page_break_indexes[1])
+
     def test_default_repo_toc_formatting_matches_policy(self) -> None:
         project_root = self.create_project()
         self.insert_toc_placeholder(project_root)
@@ -346,9 +465,8 @@ class WordFieldTests(unittest.TestCase):
         )
 
         self.assertEqual(paragraph.text.strip(), "见下图1 展示了系统结构。")
-        self.assertIn("REF fig_0001", paragraph._p.xml)
-        self.assertIn("\\h", paragraph._p.xml)
-        self.assertNotIn("\\\\h", paragraph._p.xml)
+        self.assertIn("w:hyperlink", paragraph._p.xml)
+        self.assertIn('w:anchor="fig_0001"', paragraph._p.xml)
         self.assertIn(">图1<", paragraph._p.xml)
         self.assertNotIn("[[REF:figure:fig_0001|见下图]]", paragraph._p.xml)
 
@@ -370,9 +488,8 @@ class WordFieldTests(unittest.TestCase):
         )
 
         self.assertEqual(paragraph.text.strip(), "见上表1 汇总了实验结果。")
-        self.assertIn("REF tbl_0001", paragraph._p.xml)
-        self.assertIn("\\h", paragraph._p.xml)
-        self.assertNotIn("\\\\h", paragraph._p.xml)
+        self.assertIn("w:hyperlink", paragraph._p.xml)
+        self.assertIn('w:anchor="tbl_0001"', paragraph._p.xml)
         self.assertIn(">表1<", paragraph._p.xml)
         self.assertNotIn("[[REF:table:tbl_0001|见上表]]", paragraph._p.xml)
 
@@ -395,7 +512,7 @@ class WordFieldTests(unittest.TestCase):
         )
 
         self.assertEqual(paragraph.text.strip(), "[[REF:figure:fig_0001]]")
-        self.assertNotIn("REF fig_0001", paragraph._p.xml)
+        self.assertNotIn("w:hyperlink", paragraph._p.xml)
 
 
 if __name__ == "__main__":

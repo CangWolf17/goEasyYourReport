@@ -41,12 +41,14 @@ def parse_list_item(raw_line: str) -> dict[str, object] | None:
         if not match:
             continue
         indent = len(match.group("indent"))
+        text = match.group("text").strip()
         return {
             "kind": "list_item",
             "ordered": ordered,
             "number": int(match.group("number")) if ordered else None,
             "depth": min(indent // 2, 2),
-            "text": match.group("text").strip(),
+            "text": text,
+            "segments": parse_paragraph_segments(text),
         }
     return None
 

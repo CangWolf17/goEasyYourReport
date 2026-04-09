@@ -177,6 +177,139 @@ def run_font_settings(run) -> dict[str, object]:
     }
 
 
+def set_explicit_run_font(
+    run,
+    *,
+    ascii_name: str,
+    east_asia_name: str | None,
+    size_pt: float,
+) -> None:
+    from docx.oxml import OxmlElement
+    from docx.shared import Pt
+
+    run.font.name = ascii_name
+    run.font.size = Pt(size_pt)
+
+    rpr = run._r.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:ascii"), ascii_name)
+    rfonts.set(qn("w:hAnsi"), ascii_name)
+    if east_asia_name:
+        rfonts.set(qn("w:eastAsia"), east_asia_name)
+
+    size_value = str(int(size_pt * 2))
+    sz = rpr.find(qn("w:sz"))
+    if sz is None:
+        sz = OxmlElement("w:sz")
+        rpr.append(sz)
+    sz.set(qn("w:val"), size_value)
+
+    sz_cs = rpr.find(qn("w:szCs"))
+    if sz_cs is None:
+        sz_cs = OxmlElement("w:szCs")
+        rpr.append(sz_cs)
+    sz_cs.set(qn("w:val"), size_value)
+
+
+def write_styled_cover_template(path: Path) -> None:
+    template_doc = docx.Document()
+    title = template_doc.add_paragraph()
+    title_run = title.add_run("课程考核报告")
+    title_run.bold = True
+    set_explicit_run_font(
+        title_run,
+        ascii_name="Times New Roman",
+        east_asia_name="宋体",
+        size_pt=18.0,
+    )
+
+    name_paragraph = template_doc.add_paragraph()
+    name_label = name_paragraph.add_run("学 生 姓 名：")
+    set_explicit_run_font(
+        name_label,
+        ascii_name="Times New Roman",
+        east_asia_name="Times New Roman",
+        size_pt=15.0,
+    )
+    name_value = name_paragraph.add_run("XXX")
+    set_explicit_run_font(
+        name_value,
+        ascii_name="Times New Roman",
+        east_asia_name="仿宋",
+        size_pt=14.0,
+    )
+
+    student_id_paragraph = template_doc.add_paragraph()
+    student_id_label = student_id_paragraph.add_run("学 号：")
+    set_explicit_run_font(
+        student_id_label,
+        ascii_name="Times New Roman",
+        east_asia_name="Times New Roman",
+        size_pt=15.0,
+    )
+    student_id_value = student_id_paragraph.add_run("XXX")
+    set_explicit_run_font(
+        student_id_value,
+        ascii_name="Consolas",
+        east_asia_name="Times New Roman",
+        size_pt=13.0,
+    )
+
+    completion_paragraph = template_doc.add_paragraph()
+    completion_label = completion_paragraph.add_run("完成日期：")
+    set_explicit_run_font(
+        completion_label,
+        ascii_name="Times New Roman",
+        east_asia_name="宋体",
+        size_pt=15.0,
+    )
+    completion_value = completion_paragraph.add_run("202X年XX月XX日")
+    set_explicit_run_font(
+        completion_value,
+        ascii_name="Times New Roman",
+        east_asia_name="楷体",
+        size_pt=14.0,
+    )
+
+    template_doc.add_heading("正文开始", level=1)
+    template_doc.add_paragraph("这里是普通正文。")
+    template_doc.save(path)
+
+
+def write_cover_template_with_unbound_candidates(path: Path) -> None:
+    template_doc = docx.Document()
+    for line in (
+        "学 院：",
+        "专 业：",
+        "学 生 姓 名：",
+        "学 号：",
+        "完成日期：",
+    ):
+        template_doc.add_paragraph(line)
+    template_doc.add_heading("正文开始", level=1)
+    template_doc.add_paragraph("这里是普通正文。")
+    template_doc.save(path)
+
+
+def write_cover_template_with_placeholder_candidates(path: Path) -> None:
+    template_doc = docx.Document()
+    for line in (
+        "学       院：XXXX学院",
+        "专       业：XXXX",
+        "学 生 姓 名：XXX",
+        "学       号：XXX",
+        "评 阅 教 师：XXX",
+        "完 成 时 间：202X年XX月XX日",
+    ):
+        template_doc.add_paragraph(line)
+    template_doc.add_heading("正文开始", level=1)
+    template_doc.add_paragraph("这里是普通正文。")
+    template_doc.save(path)
+
+
 class InitProjectTests(unittest.TestCase):
     def test_run_optional_reads_utf8_child_output(self) -> None:
         from scripts.init_project import run_optional
@@ -510,6 +643,151 @@ class InitProjectTests(unittest.TestCase):
             texts = [paragraph.text for paragraph in private_doc.paragraphs]
             self.assertTrue(any("Test User" in text for text in texts))
             self.assertTrue(any("S-001" in text for text in texts))
+
+    def test_private_field_injection_preserves_cover_run_formatting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            source_template = project_root / "styled-cover-template.docx"
+            write_styled_cover_template(source_template)
+
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--template",
+                    str(source_template),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            private_source = project_root.parent / "private-fields.json"
+            private_source.write_text(
+                json.dumps(
+                    {"full_name": "田中 音声测试", "student_id": "VOICE-2026-0421"},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            inject_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "inject_private_fields.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--source",
+                    str(private_source),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(inject_result.returncode, 0, msg=inject_result.stderr)
+
+            private_doc = docx.Document(project_root / "out" / "private.docx")
+            paragraph = next(
+                item
+                for item in private_doc.paragraphs
+                if "学 生 姓 名：" in item.text
+            )
+
+            self.assertEqual(paragraph.text, "学 生 姓 名：田中 音声测试")
+            self.assertEqual(len(paragraph.runs), 2)
+            self.assertEqual(run_font_settings(paragraph.runs[0])["ascii"], "Times New Roman")
+            self.assertEqual(run_font_settings(paragraph.runs[0])["size"], "30")
+            self.assertEqual(paragraph.runs[0].text, "学 生 姓 名：")
+            self.assertEqual(paragraph.runs[1].text, "田中 音声测试")
+            self.assertEqual(run_font_settings(paragraph.runs[1])["ascii"], "Times New Roman")
+            self.assertEqual(run_font_settings(paragraph.runs[1])["eastAsia"], "仿宋")
+            self.assertEqual(run_font_settings(paragraph.runs[1])["size"], "28")
+
+    def test_build_preview_surfaces_unbound_cover_candidates_and_private_template(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            source_template = project_root / "unbound-cover-template.docx"
+            write_cover_template_with_unbound_candidates(source_template)
+
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--template",
+                    str(source_template),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            summary = json.loads(
+                (project_root / "out" / "preview.summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(
+                summary["field_binding"]["private_template"],
+                {"full_name": "", "student_id": ""},
+            )
+            self.assertIn("学 院：", summary["field_binding"]["unbound_candidates"])
+            self.assertIn("专 业：", summary["field_binding"]["unbound_candidates"])
+            self.assertIn(
+                "cover field candidates detected without bindings",
+                summary["review"]["needs_confirmation"],
+            )
+
+    def test_scan_template_detects_cover_candidates_with_placeholder_suffixes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            source_template = project_root / "placeholder-cover-template.docx"
+            write_cover_template_with_placeholder_candidates(source_template)
+
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--template",
+                    str(source_template),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            scan = json.loads(
+                (project_root / "logs" / "template_scan.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            candidates = [item["text"] for item in scan["anchors"]["field_candidates"]]
+
+            self.assertIn("学       院：", candidates)
+            self.assertIn("专       业：", candidates)
+            self.assertIn("评 阅 教 师：", candidates)
+            self.assertIn("完 成 时 间：", candidates)
 
     def test_build_report_splits_markdown_into_multiple_paragraphs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1496,9 +1774,9 @@ class InitProjectTests(unittest.TestCase):
             }
 
             self.assertIn("见下图1 展示了系统结构。", rendered)
-            self.assertIn("REF fig_0001", rendered["见下图1 展示了系统结构。"])
+            self.assertIn('w:anchor="fig_0001"', rendered["见下图1 展示了系统结构。"])
             self.assertIn("见上表1 汇总了实验结果。", rendered)
-            self.assertIn("REF tbl_0001", rendered["见上表1 汇总了实验结果。"])
+            self.assertIn('w:anchor="tbl_0001"', rendered["见上表1 汇总了实验结果。"])
 
     def test_build_report_applies_reference_style_in_reference_section(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

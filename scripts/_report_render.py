@@ -7,7 +7,11 @@ import re
 from pathlib import Path
 
 from scripts._docx_fields import add_bookmark, append_complex_field
-from scripts._equation_omml import UnsupportedEquationSyntax, latex_to_omml
+from scripts._equation_omml import (
+    UnsupportedEquationSyntax,
+    latex_to_omml,
+    numbered_latex_to_omml,
+)
 from scripts._report_markdown import cross_reference_placeholder_text
 from scripts._docx_semantics import (
     apply_default_table_rules,
@@ -644,17 +648,14 @@ def apply_equation_block(
 ) -> None:
     clear_paragraph(paragraph)
     apply_named_style(paragraph, body_style_name(available_styles))
-    paragraph.alignment = importlib.import_module(
-        "docx.enum.text"
-    ).WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.first_line_indent = importlib.import_module(
+        "docx.shared"
+    ).Pt(0)
     set_paragraph_pagination(paragraph, keep_lines=True)
     bookmark_name = str(block.get("id", "eq_0001"))
     latex = str(block.get("latex", "")).strip()
     try:
-        o_math_para = create_word_element("m:oMathPara")
-        o_math_para.append(latex_to_omml(latex))
-        paragraph._p.append(o_math_para)
-        paragraph.add_run(f"({equation_ordinal(block)})")
+        paragraph._p.append(numbered_latex_to_omml(latex, equation_ordinal(block)))
         add_bookmark(paragraph, bookmark_name)
     except UnsupportedEquationSyntax:
         record_unsupported_equation(equation_status, latex)
@@ -735,6 +736,7 @@ def apply_block(
     )
     text = str(block.get("text", ""))
     segments = block.get("segments")
+    render_segments = segments
     kind = block.get("kind")
     if forced_style is not None:
         apply_named_style(paragraph, forced_style)
@@ -756,12 +758,28 @@ def apply_block(
         elif "List Paragraph" in available_styles:
             paragraph.style = "List Paragraph"
             text = fallback_list_text(block)
+            render_segments = None
         else:
             text = fallback_list_text(block)
+            render_segments = None
     else:
         apply_named_style(paragraph, body_style_name(available_styles))
-    if kind == "paragraph" and isinstance(segments, list):
-        for segment in segments:
+    if kind == "paragraph" and isinstance(render_segments, list):
+        for segment in render_segments:
+            if segment.get("kind") == "cross_reference":
+                paragraph.add_run(cross_reference_placeholder_text(segment))
+            elif segment.get("kind") == "inline_equation":
+                append_inline_equation(
+                    paragraph,
+                    str(segment.get("latex", "")),
+                    equation_status,
+                )
+            else:
+                paragraph.add_run(str(segment.get("text", "")))
+        apply_paragraph_font_settings(paragraph, body_font)
+        return
+    if kind == "list_item" and isinstance(render_segments, list):
+        for segment in render_segments:
             if segment.get("kind") == "cross_reference":
                 paragraph.add_run(cross_reference_placeholder_text(segment))
             elif segment.get("kind") == "inline_equation":

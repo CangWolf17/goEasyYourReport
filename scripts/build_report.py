@@ -14,13 +14,14 @@ from scripts._bibliography import load_bibliography_entries, should_emit_bibliog
 from scripts._docx_integrity import validate_docx_package
 from scripts._docx_fields import (
     add_bookmark,
-    append_reference_field,
+    append_reference_hyperlink,
     insert_toc_field,
 )
 from scripts._docx_xml import (
     clear_paragraph,
     create_word_element,
     insert_paragraph_after,
+    insert_paragraph_before,
     word_qn,
 )
 from scripts._report_markdown import (
@@ -118,14 +119,54 @@ def apply_toc_if_enabled(doc, plan: dict[str, object]) -> None:
     toc = semantics.get("toc", {})
     if not isinstance(toc, dict):
         return
-    if not toc.get("detected") or not toc.get("enabled"):
-        return
-
-    anchor = find_toc_anchor(doc)
-    if anchor is None:
+    if not toc.get("enabled"):
         return
 
     ensure_toc_styles(doc)
+    anchor = find_toc_anchor(doc)
+    if anchor is None:
+        fillable = plan.get("regions", {}).get("fillable", [])
+        if not fillable:
+            return
+        start_paragraph = fillable[0].get("start_paragraph")
+        if not isinstance(start_paragraph, int) or start_paragraph >= len(doc.paragraphs):
+            return
+        body_anchor = doc.paragraphs[start_paragraph]
+        paragraph_type = importlib.import_module("docx.text.paragraph").Paragraph
+        page_breaks_before_body = []
+        previous_element = body_anchor._p.getprevious()
+        while previous_element is not None and previous_element.tag == word_qn("w:p"):
+            previous_paragraph = paragraph_type(previous_element, body_anchor._parent)
+            if 'w:type="page"' not in previous_paragraph._p.xml:
+                break
+            page_breaks_before_body.insert(0, previous_paragraph)
+            previous_element = previous_element.getprevious()
+
+        if page_breaks_before_body:
+            before_toc_break = page_breaks_before_body[0]
+            anchor = insert_paragraph_after(before_toc_break)
+            if len(page_breaks_before_body) == 1:
+                after_toc_break = insert_paragraph_after(anchor)
+                after_toc_break.add_run().add_break(
+                    importlib.import_module("docx.enum.text").WD_BREAK.PAGE
+                )
+            else:
+                after_toc_break = page_breaks_before_body[1]
+                for extra_break in page_breaks_before_body[2:]:
+                    parent = extra_break._element.getparent()
+                    if parent is not None:
+                        parent.remove(extra_break._element)
+        else:
+            anchor = insert_paragraph_before(body_anchor)
+            before_toc_break = insert_paragraph_before(anchor)
+            before_toc_break.add_run().add_break(
+                importlib.import_module("docx.enum.text").WD_BREAK.PAGE
+            )
+            after_toc_break = insert_paragraph_after(anchor)
+            after_toc_break.add_run().add_break(
+                importlib.import_module("docx.enum.text").WD_BREAK.PAGE
+            )
+
     style_name = anchor.style.name if getattr(anchor, "style", None) is not None else None
     clear_paragraph(anchor)
     if style_name:
@@ -222,7 +263,7 @@ def apply_cross_reference_pass(doc, plan: dict[str, object]) -> None:
             if entry is None:
                 paragraph.add_run(cross_reference_placeholder_text(segment))
                 continue
-            append_reference_field(
+            append_reference_hyperlink(
                 paragraph,
                 bookmark_name=entry["bookmark"],
                 label_text=entry["label"],

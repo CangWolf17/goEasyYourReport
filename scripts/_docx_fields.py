@@ -82,6 +82,31 @@ def append_reference_field(
     )
 
 
+def append_reference_hyperlink(
+    paragraph,
+    *,
+    bookmark_name: str,
+    label_text: str,
+    prefix_text: str | None = None,
+) -> None:
+    visible_prefix = (prefix_text or "").strip()
+    if visible_prefix and label_text and visible_prefix.endswith(label_text[:1]):
+        visible_prefix = visible_prefix[: -len(label_text[:1])]
+    if visible_prefix:
+        _append_text_run(paragraph, visible_prefix)
+
+    hyperlink = create_word_element("w:hyperlink")
+    hyperlink.set(word_qn("w:anchor"), bookmark_name)
+    hyperlink.set(word_qn("w:history"), "1")
+
+    run = create_word_element("w:r")
+    text = create_word_element("w:t")
+    text.text = label_text
+    run.append(text)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
 def enable_update_fields_on_open(doc) -> None:
     settings_part = getattr(doc._part, "_settings_part", None)
     if settings_part is None:

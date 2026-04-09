@@ -36,9 +36,12 @@ def build_summary(
         anchors = {}
 
     bindings = binding.get("bindings", [])
+    fields = binding.get("fields", [])
     availability = binding.get("availability", {})
     if not isinstance(bindings, list):
         bindings = []
+    if not isinstance(fields, list):
+        fields = []
     if not isinstance(availability, dict):
         availability = {}
     semantics = ensure_plan_semantics(plan)
@@ -52,6 +55,28 @@ def build_summary(
     }
     cross_references = semantics.get("cross_references", {})
     bibliography = semantics.get("bibliography", {})
+    field_candidates = anchors.get("field_candidates", [])
+    if not isinstance(field_candidates, list):
+        field_candidates = []
+    bound_anchor_texts = {
+        str(item.get("anchor_text", "")).strip()
+        for item in bindings
+        if isinstance(item, dict) and str(item.get("anchor_text", "")).strip()
+    }
+    unbound_candidates = [
+        str(item.get("text", "")).strip()
+        for item in field_candidates
+        if isinstance(item, dict)
+        and str(item.get("text", "")).strip()
+        and str(item.get("text", "")).strip() not in bound_anchor_texts
+    ]
+    private_template = {
+        str(field["name"]): ""
+        for field in fields
+        if isinstance(field, dict)
+        and field.get("source") == "private"
+        and str(field.get("name", "")).strip()
+    }
 
     needs_confirmation = []
     if not plan.get("regions", {}).get("fillable", []):
@@ -60,6 +85,8 @@ def build_summary(
         needs_confirmation.append("no field candidates detected")
     if not bindings:
         needs_confirmation.append("no field bindings configured")
+    if unbound_candidates:
+        needs_confirmation.append("cover field candidates detected without bindings")
     if template_recommendation and template_recommendation.get("pending_acceptance"):
         needs_confirmation.append("template style recommendation pending")
     if not outline_complete:
@@ -89,6 +116,8 @@ def build_summary(
             "path": plan["field_binding"]["path"],
             "bindings": bindings,
             "availability": availability,
+            "private_template": private_template,
+            "unbound_candidates": unbound_candidates,
         },
         "semantics": {
             "style_candidates": style_candidates,

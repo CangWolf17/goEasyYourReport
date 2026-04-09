@@ -219,7 +219,8 @@ class BibliographyStrategyTests(ProjectHarness):
         redacted = docx.Document(project_root / "out" / "redacted.docx")
         reference_paragraph = next(item for item in redacted.paragraphs if item.text.strip() == "[1]")
 
-        self.assertIn("REF ref_0001", reference_paragraph._p.xml)
+        self.assertIn("w:hyperlink", reference_paragraph._p.xml)
+        self.assertIn('w:anchor="ref_0001"', reference_paragraph._p.xml)
         self.assertIn(">[1]<", reference_paragraph._p.xml)
 
     def test_generated_bibliography_entries_use_body_font_and_no_hanging_indent(
@@ -328,7 +329,7 @@ class BibliographyStrategyTests(ProjectHarness):
         )
 
         self.assertEqual(paragraph.text.strip(), "[[REF:bibliography:ref_0001]]")
-        self.assertNotIn("REF ref_0001", paragraph._p.xml)
+        self.assertNotIn("w:hyperlink", paragraph._p.xml)
 
 
 class EquationRenderingTests(ProjectHarness):
@@ -346,6 +347,22 @@ class EquationRenderingTests(ProjectHarness):
                 {"kind": "text", "text": "由 "},
                 {"kind": "inline_equation", "latex": "a=b"},
                 {"kind": "text", "text": " 可得"},
+            ],
+        )
+
+    def test_markdown_parser_preserves_inline_equations_in_list_items(self) -> None:
+        from scripts._report_markdown import markdown_to_blocks
+
+        markdown_path = self.write_markdown("- $s[n]$ 为原始语音样信号")
+
+        blocks = markdown_to_blocks(markdown_path)
+
+        self.assertEqual(blocks[0]["kind"], "list_item")
+        self.assertEqual(
+            blocks[0]["segments"],
+            [
+                {"kind": "inline_equation", "latex": "s[n]"},
+                {"kind": "text", "text": " 为原始语音样信号"},
             ],
         )
 
@@ -390,6 +407,46 @@ class EquationRenderingTests(ProjectHarness):
         self.assertIn(">a<", paragraph._p.xml)
         self.assertIn(">b<", paragraph._p.xml)
 
+    def test_inline_equation_supports_eta_greek_letter(self) -> None:
+        project_root = self.create_project()
+        (project_root / "docs" / "report_body.md").write_text(
+            "其中 $\\eta[n]$ 表示噪声项。",
+            encoding="utf-8",
+        )
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import docx
+
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+        paragraph = next(item for item in redacted.paragraphs if "表示噪声项" in item.text)
+
+        self.assertIn("<m:oMath", paragraph._p.xml)
+        self.assertIn(">η<", paragraph._p.xml)
+        self.assertNotIn("$\\eta[n]$", paragraph._p.xml)
+
+    def test_list_item_inline_equation_renders_as_word_equation_object(self) -> None:
+        project_root = self.create_project()
+        (project_root / "docs" / "report_body.md").write_text(
+            "### 2.1 参数说明\n\n- $s[n]$ 为原始语音样信号\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import docx
+
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+        paragraph = next(item for item in redacted.paragraphs if "为原始语音样信号" in item.text)
+
+        self.assertEqual(paragraph.style.name, "列表符号")
+        self.assertIn("<m:oMath", paragraph._p.xml)
+        self.assertIn(">s<", paragraph._p.xml)
+        self.assertIn(">n<", paragraph._p.xml)
+        self.assertNotIn("$s[n]$", paragraph._p.xml)
+
     def test_block_equation_renders_as_word_equation_paragraph(self) -> None:
         project_root = self.create_project()
         (project_root / "docs" / "report_body.md").write_text(
@@ -423,7 +480,10 @@ class EquationRenderingTests(ProjectHarness):
         redacted = docx.Document(project_root / "out" / "redacted.docx")
         paragraph = next(item for item in redacted.paragraphs if "<m:oMath" in item._p.xml)
 
-        self.assertIn("(1)", paragraph.text)
+        self.assertIn("<m:eqArr", paragraph._p.xml)
+        self.assertIn("<m:d>", paragraph._p.xml)
+        self.assertIn(">#<", paragraph._p.xml)
+        self.assertNotIn("<w:jc w:val=\"center\"/>", paragraph._p.xml)
         self.assertIn("bookmarkStart", paragraph._p.xml)
         self.assertIn("eq_0001", paragraph._p.xml)
         start_index = paragraph._p.xml.index("bookmarkStart")
@@ -448,7 +508,8 @@ class EquationRenderingTests(ProjectHarness):
         paragraph = next(item for item in redacted.paragraphs if "公式(1)" in item.text)
 
         self.assertEqual(paragraph.text.strip(), "由公式(1)")
-        self.assertIn("REF eq_0001", paragraph._p.xml)
+        self.assertIn("w:hyperlink", paragraph._p.xml)
+        self.assertIn('w:anchor="eq_0001"', paragraph._p.xml)
         self.assertIn(">公式(1)<", paragraph._p.xml)
 
 

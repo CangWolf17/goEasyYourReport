@@ -50,6 +50,53 @@ def replace_after_label(text: str, label: str, replacement: str) -> str:
     return f"{prefix}{label}{replacement}"
 
 
+def replace_after_label_in_runs(paragraph, label: str, replacement: str) -> bool:
+    if label not in paragraph.text:
+        return False
+
+    spans: list[tuple[object, int, int]] = []
+    cursor = 0
+    for run in paragraph.runs:
+        text = run.text or ""
+        next_cursor = cursor + len(text)
+        spans.append((run, cursor, next_cursor))
+        cursor = next_cursor
+
+    start = paragraph.text.index(label) + len(label)
+    replacement_inserted = False
+    candidate_run = None
+
+    for run, run_start, run_end in spans:
+        text = run.text or ""
+        if run_end <= start:
+            continue
+        if candidate_run is None:
+            candidate_run = run
+        if run_start < start < run_end:
+            prefix = text[: start - run_start]
+            run.text = prefix + replacement
+            replacement_inserted = True
+            continue
+        if not replacement_inserted:
+            run.text = replacement
+            replacement_inserted = True
+        else:
+            run.text = ""
+
+    if replacement_inserted:
+        return True
+
+    if candidate_run is not None:
+        candidate_run.text = f"{candidate_run.text}{replacement}"
+        return True
+
+    if paragraph.runs:
+        paragraph.runs[-1].text = f"{paragraph.runs[-1].text}{replacement}"
+        return True
+    paragraph.add_run(f"{label}{replacement}")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Inject private values into a redacted DOCX output."
@@ -87,7 +134,7 @@ def main() -> int:
         updated = False
         for paragraph in doc.paragraphs:
             if anchor and anchor in paragraph.text:
-                paragraph.text = replace_after_label(paragraph.text, anchor, value)
+                replace_after_label_in_runs(paragraph, anchor, value)
                 updated = True
                 resolved.append(field)
                 break

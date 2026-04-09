@@ -11,6 +11,7 @@ GREEK_LETTERS = {
     "gamma": "γ",
     "delta": "δ",
     "epsilon": "ε",
+    "eta": "η",
     "theta": "θ",
     "lambda": "λ",
     "mu": "μ",
@@ -225,3 +226,44 @@ def latex_to_omml(latex: str):
     equation = create_word_element("m:oMath")
     _append_nodes(equation, nodes)
     return equation
+
+
+def numbered_latex_to_omml(latex: str, ordinal: int):
+    base_equation = latex_to_omml(latex)
+
+    numbered_equation = create_word_element("m:oMath")
+    equation_array = create_word_element("m:eqArr")
+    equation_array_properties = create_word_element("m:eqArrPr")
+    max_distance = create_word_element("m:maxDist")
+    max_distance.set(word_qn("m:val"), "1")
+    equation_array_properties.append(max_distance)
+    equation_array.append(equation_array_properties)
+
+    equation_entry = create_word_element("m:e")
+    for child in list(base_equation):
+        equation_entry.append(child)
+
+    separator = create_word_element("m:r")
+    separator_text = create_word_element("m:t")
+    separator_text.text = "#"
+    separator.append(separator_text)
+    equation_entry.append(separator)
+
+    delimiter = create_word_element("m:d")
+    delimiter_properties = create_word_element("m:dPr")
+    delimiter.append(delimiter_properties)
+    delimiter_body = create_word_element("m:e")
+    number_run = create_word_element("m:r")
+    number_text = create_word_element("m:t")
+    number_text.text = str(ordinal)
+    number_run.append(number_text)
+    delimiter_body.append(number_run)
+    delimiter.append(delimiter_body)
+    equation_entry.append(delimiter)
+
+    equation_array.append(equation_entry)
+    numbered_equation.append(equation_array)
+
+    math_paragraph = create_word_element("m:oMathPara")
+    math_paragraph.append(numbered_equation)
+    return math_paragraph

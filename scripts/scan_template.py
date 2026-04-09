@@ -23,10 +23,27 @@ def is_heading_like(style_name: str, text: str) -> bool:
 
 
 def is_field_candidate(text: str) -> bool:
+    return extract_field_candidate_text(text) is not None
+
+
+def extract_field_candidate_text(text: str) -> str | None:
     stripped = text.strip()
     if not stripped:
-        return False
-    return stripped.endswith(":") or stripped.endswith("：")
+        return None
+    if stripped.endswith(":") or stripped.endswith("："):
+        return stripped
+
+    match = re.match(r"^(?P<label>[^:：]{1,40}[：:])(?P<value>.+)$", stripped)
+    if not match:
+        return None
+
+    label = match.group("label").strip()
+    value = match.group("value").strip()
+    if not value:
+        return label
+    if "X" in value.upper() or "Ｘ" in value:
+        return label
+    return None
 
 
 def analyze_docx(template_path: Path) -> dict[str, object]:
@@ -36,6 +53,7 @@ def analyze_docx(template_path: Path) -> dict[str, object]:
     paragraphs = []
     heading_anchors = []
     field_candidates = []
+    raw_field_candidates = []
     first_heading_index = None
     for index, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text.strip()
@@ -56,13 +74,15 @@ def analyze_docx(template_path: Path) -> dict[str, object]:
                     "text": text,
                 }
             )
-        if is_field_candidate(text):
-            field_candidates.append(
+        field_label = extract_field_candidate_text(text)
+        if field_label is not None:
+            raw_field_candidates.append(
                 {
                     "kind": "field_candidate",
                     "paragraph": index,
                     "style": style_name,
-                    "text": text,
+                    "text": field_label,
+                    "source_text": text,
                 }
             )
         if first_heading_index is None and text and is_heading_like(style_name, text):
@@ -70,6 +90,9 @@ def analyze_docx(template_path: Path) -> dict[str, object]:
 
     if first_heading_index is None:
         first_heading_index = min(len(paragraphs), 12) if paragraphs else 0
+    field_candidates = [
+        item for item in raw_field_candidates if item["paragraph"] < first_heading_index
+    ]
 
     locked = []
     fillable = []
