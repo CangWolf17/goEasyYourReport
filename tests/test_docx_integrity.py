@@ -4,6 +4,7 @@ import contextlib
 import importlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,11 @@ from scripts._docx_integrity import validate_docx_package
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(r"D:\Miniconda\python.exe")
 PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def qn(local_name: str) -> str:
+    return f"{{{W_NS}}}{local_name}"
 
 
 def rewrite_docx(path: Path, mutator) -> None:
@@ -143,6 +149,78 @@ class DocxIntegrityTests(unittest.TestCase):
             report["errors"],
         )
 
+    def test_validate_docx_package_rejects_missing_style_dependency_target(self) -> None:
+        project_root = self.create_project()
+        docx_path = self.copy_docx(
+            project_root / "templates" / "template.user.docx",
+            "missing-style-dependency.docx",
+        )
+
+        def break_style_dependency(entries: dict[str, bytes]) -> None:
+            styles_root = ET.fromstring(entries["word/styles.xml"])
+            for style in styles_root.findall(qn("style")):
+                name = style.find(qn("name"))
+                if name is None or name.get(qn("val")) != "题目":
+                    continue
+                based_on = style.find(qn("basedOn"))
+                if based_on is None:
+                    based_on = ET.SubElement(style, qn("basedOn"))
+                based_on.set(qn("val"), "missing-normal-style")
+                break
+            entries["word/styles.xml"] = ET.tostring(
+                styles_root,
+                encoding="utf-8",
+                xml_declaration=True,
+            )
+
+        rewrite_docx(docx_path, break_style_dependency)
+
+        report = validate_docx_package(docx_path)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            {
+                "kind": "missing_style_reference",
+                "part": "word/styles.xml",
+                "style_id": "题目",
+                "attribute": "basedOn",
+                "target": "missing-normal-style",
+            },
+            report["errors"],
+        )
+
+    def test_validate_docx_package_rejects_undefined_ignorable_prefix(self) -> None:
+        project_root = self.create_project()
+        docx_path = self.copy_docx(
+            project_root / "templates" / "template.user.docx",
+            "undefined-ignorable-prefix.docx",
+        )
+
+        def break_ignorable_prefix(entries: dict[str, bytes]) -> None:
+            styles_xml = entries["word/styles.xml"].decode("utf-8")
+            styles_xml, replacements = re.subn(
+                r'Ignorable="([^"]+)"',
+                lambda match: f'Ignorable="{match.group(1)} w99"',
+                styles_xml,
+                count=1,
+            )
+            self.assertEqual(replacements, 1)
+            entries["word/styles.xml"] = styles_xml.encode("utf-8")
+
+        rewrite_docx(docx_path, break_ignorable_prefix)
+
+        report = validate_docx_package(docx_path)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            {
+                "kind": "undefined_ignorable_prefix",
+                "part": "word/styles.xml",
+                "prefix": "w99",
+            },
+            report["errors"],
+        )
+
     def test_validate_docx_package_accepts_clean_repo_generated_docx(self) -> None:
         project_root = self.create_project()
         docx_path = project_root / "templates" / "template.user.docx"
@@ -232,6 +310,19 @@ class DocxIntegrityTests(unittest.TestCase):
 
     def test_voice_template_redacted_docx_passes_integrity_validation(self) -> None:
         project_root = PROJECT_ROOT / "temp" / "voice-real-project"
+        recommend = subprocess.run(
+            [
+                str(PYTHON),
+                str(PROJECT_ROOT / "scripts" / "recommend_template_styles.py"),
+                "--project-root",
+                str(project_root),
+                "--apply",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(recommend.returncode, 0, msg=recommend.stderr)
+
         result = subprocess.run(
             [
                 str(PYTHON),

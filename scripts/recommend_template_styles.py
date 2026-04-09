@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import re
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -34,6 +35,21 @@ OUTLINE_STYLE_LEVELS = {
     "标题3": 1,
     "标题4": 2,
 }
+STYLE_REFERENCE_ATTRIBUTES = ("basedOn", "next", "link")
+STYLE_XML_DECLARATION_PATTERN = re.compile(rb"^<\?xml[^?]*\?>")
+STYLE_XML_ROOT_PATTERN = re.compile(rb"<w:styles\b[^>]*>")
+STYLE_XML_NAMESPACES = {
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "w": W_NS,
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+    "w16cex": "http://schemas.microsoft.com/office/word/2018/wordml/cex",
+    "w16cid": "http://schemas.microsoft.com/office/word/2016/wordml/cid",
+    "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
+    "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+}
 
 
 def qn(local_name: str) -> str:
@@ -60,6 +76,26 @@ def style_name(style_element: ET.Element) -> str | None:
     return name_element.get(qn("val"))
 
 
+def attribute_name(element: ET.Element, local_name: str) -> str:
+    if qn(local_name) in element.attrib:
+        return qn(local_name)
+    if local_name in element.attrib:
+        return local_name
+    return qn(local_name)
+
+
+def attribute_value(element: ET.Element, local_name: str) -> str | None:
+    return element.get(qn(local_name)) or element.get(local_name)
+
+
+def style_id(style_element: ET.Element) -> str | None:
+    return attribute_value(style_element, "styleId")
+
+
+def set_style_id(style_element: ET.Element, value: str) -> None:
+    style_element.set(attribute_name(style_element, "styleId"), value)
+
+
 def outline_level(style_element: ET.Element) -> int | None:
     p_pr = style_element.find(qn("pPr"))
     if p_pr is None:
@@ -78,14 +114,101 @@ def style_by_name(styles_root: ET.Element, target_name: str) -> ET.Element | Non
     return None
 
 
+def style_ids_by_name(styles_root: ET.Element) -> dict[str, str]:
+    return {
+        name: style_identifier
+        for style in styles_root.findall(qn("style"))
+        for name in [style_name(style)]
+        for style_identifier in [style_id(style)]
+        if name and style_identifier
+    }
+
+
+def style_names_by_id(styles_root: ET.Element) -> dict[str, str]:
+    return {
+        style_identifier: name
+        for style in styles_root.findall(qn("style"))
+        for name in [style_name(style)]
+        for style_identifier in [style_id(style)]
+        if name and style_identifier
+    }
+
+
+def remap_style_references(
+    style_element: ET.Element,
+    *,
+    donor_style_names_by_id: dict[str, str],
+    final_style_ids_by_name: dict[str, str],
+) -> None:
+    for attribute in STYLE_REFERENCE_ATTRIBUTES:
+        dependency = style_element.find(qn(attribute))
+        if dependency is None:
+            continue
+        target_style_id = attribute_value(dependency, "val")
+        if not target_style_id:
+            continue
+        target_style_name = donor_style_names_by_id.get(target_style_id)
+        if target_style_name is None:
+            continue
+        mapped_style_id = final_style_ids_by_name.get(target_style_name)
+        if mapped_style_id is None:
+            continue
+        dependency.set(attribute_name(dependency, "val"), mapped_style_id)
+
+
+def register_style_xml_namespaces() -> None:
+    for prefix, uri in STYLE_XML_NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+
+
+def serialize_styles_xml(styles_root: ET.Element, *, original_xml: bytes) -> bytes:
+    register_style_xml_namespaces()
+    serialized = ET.tostring(styles_root, encoding="utf-8", xml_declaration=True)
+
+    original_declaration = STYLE_XML_DECLARATION_PATTERN.search(original_xml)
+    if original_declaration is not None:
+        serialized = STYLE_XML_DECLARATION_PATTERN.sub(
+            original_declaration.group(0),
+            serialized,
+            count=1,
+        )
+
+    original_root = STYLE_XML_ROOT_PATTERN.search(original_xml)
+    serialized_root = STYLE_XML_ROOT_PATTERN.search(serialized)
+    if original_root is not None and serialized_root is not None:
+        serialized = (
+            serialized[: serialized_root.start()]
+            + original_root.group(0)
+            + serialized[serialized_root.end() :]
+        )
+
+    return serialized
+
+
 def replace_or_append_style(
     styles_root: ET.Element,
     donor_style: ET.Element,
     *,
     style_name_value: str,
+    donor_style_names_by_id: dict[str, str],
+    final_style_ids_by_name: dict[str, str],
 ) -> None:
     existing = style_by_name(styles_root, style_name_value)
     donor_copy = deepcopy(donor_style)
+    existing_style_id = None if existing is None else style_id(existing)
+    final_style_id = (
+        final_style_ids_by_name.get(style_name_value)
+        or existing_style_id
+        or style_id(donor_copy)
+    )
+    if final_style_id is not None:
+        set_style_id(donor_copy, final_style_id)
+        final_style_ids_by_name[style_name_value] = final_style_id
+    remap_style_references(
+        donor_copy,
+        donor_style_names_by_id=donor_style_names_by_id,
+        final_style_ids_by_name=final_style_ids_by_name,
+    )
     if existing is None:
         styles_root.append(donor_copy)
         return
@@ -108,7 +231,8 @@ def merge_missing_styles(
     ]
 
     with zipfile.ZipFile(user_template, "r") as user_zip:
-        user_styles_root = ET.fromstring(user_zip.read("word/styles.xml"))
+        user_styles_xml = user_zip.read("word/styles.xml")
+        user_styles_root = ET.fromstring(user_styles_xml)
         user_entries = {
             info.filename: user_zip.read(info.filename) for info in user_zip.infolist()
         }
@@ -122,6 +246,28 @@ def merge_missing_styles(
         for name in [style_name(style)]
         if name
     }
+    donor_style_names_by_id = style_names_by_id(donor_styles_root)
+
+    outline_replacements = []
+    for style_name_value, expected_outline in OUTLINE_STYLE_LEVELS.items():
+        donor_style = donor_styles.get(style_name_value)
+        user_style = style_by_name(user_styles_root, style_name_value)
+        if donor_style is None or user_style is None:
+            continue
+        if outline_level(user_style) != expected_outline:
+            outline_replacements.append(style_name_value)
+
+    final_style_ids_by_name = style_ids_by_name(user_styles_root)
+    for style_name_value in set(copied_styles + outline_replacements):
+        donor_style = donor_styles.get(style_name_value)
+        if donor_style is None:
+            continue
+        existing = style_by_name(user_styles_root, style_name_value)
+        existing_style_id = None if existing is None else style_id(existing)
+        donor_style_id = style_id(donor_style)
+        final_style_id = existing_style_id or donor_style_id
+        if final_style_id is not None:
+            final_style_ids_by_name[style_name_value] = final_style_id
 
     replaced_styles: list[str] = []
     for style_name_value in copied_styles:
@@ -132,24 +278,27 @@ def merge_missing_styles(
             user_styles_root,
             donor_style,
             style_name_value=style_name_value,
+            donor_style_names_by_id=donor_style_names_by_id,
+            final_style_ids_by_name=final_style_ids_by_name,
         )
 
-    for style_name_value, expected_outline in OUTLINE_STYLE_LEVELS.items():
+    for style_name_value in outline_replacements:
         donor_style = donor_styles.get(style_name_value)
-        user_style = style_by_name(user_styles_root, style_name_value)
-        if donor_style is None or user_style is None:
+        if donor_style is None:
             continue
-        if outline_level(user_style) != expected_outline:
-            replace_or_append_style(
-                user_styles_root,
-                donor_style,
-                style_name_value=style_name_value,
-            )
-            if style_name_value not in copied_styles:
-                replaced_styles.append(style_name_value)
+        replace_or_append_style(
+            user_styles_root,
+            donor_style,
+            style_name_value=style_name_value,
+            donor_style_names_by_id=donor_style_names_by_id,
+            final_style_ids_by_name=final_style_ids_by_name,
+        )
+        if style_name_value not in copied_styles:
+            replaced_styles.append(style_name_value)
 
-    user_entries["word/styles.xml"] = ET.tostring(
-        user_styles_root, encoding="utf-8", xml_declaration=True
+    user_entries["word/styles.xml"] = serialize_styles_xml(
+        user_styles_root,
+        original_xml=user_styles_xml,
     )
 
     recommended_template.parent.mkdir(parents=True, exist_ok=True)

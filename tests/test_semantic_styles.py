@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -11,10 +12,26 @@ from pathlib import Path
 
 import docx
 
+from scripts._docx_integrity import validate_docx_package
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(r"D:\Miniconda\python.exe")
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+STYLE_XML_DECLARATION_PATTERN = re.compile(rb"^<\?xml[^?]*\?>")
+STYLE_XML_ROOT_PATTERN = re.compile(rb"<w:styles\b[^>]*>")
+STYLE_XML_NAMESPACES = {
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "w": W_NS,
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+    "w16cex": "http://schemas.microsoft.com/office/word/2018/wordml/cex",
+    "w16cid": "http://schemas.microsoft.com/office/word/2016/wordml/cid",
+    "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
+    "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+}
 
 
 def write_template(
@@ -56,6 +73,90 @@ def style_outline_level(docx_path: Path, style_name: str) -> int | None:
         raw = outline.get(f"{{{W_NS}}}val")
         return None if raw is None else int(raw)
     return None
+
+
+def style_id(docx_path: Path, style_name: str) -> str | None:
+    with zipfile.ZipFile(docx_path, "r") as docx_zip:
+        root = ET.fromstring(docx_zip.read("word/styles.xml"))
+    for style in root.findall(f"{{{W_NS}}}style"):
+        name = style.find(f"{{{W_NS}}}name")
+        if name is None or name.get(f"{{{W_NS}}}val") != style_name:
+            continue
+        return style.get(f"{{{W_NS}}}styleId") or style.get("styleId")
+    return None
+
+
+def style_dependency_value(docx_path: Path, style_name: str, dependency: str) -> str | None:
+    with zipfile.ZipFile(docx_path, "r") as docx_zip:
+        root = ET.fromstring(docx_zip.read("word/styles.xml"))
+    for style in root.findall(f"{{{W_NS}}}style"):
+        name = style.find(f"{{{W_NS}}}name")
+        if name is None or name.get(f"{{{W_NS}}}val") != style_name:
+            continue
+        dependency_element = style.find(f"{{{W_NS}}}{dependency}")
+        if dependency_element is None:
+            return None
+        return dependency_element.get(f"{{{W_NS}}}val")
+    return None
+
+
+def rewrite_normal_style_id(docx_path: Path, new_style_id: str) -> None:
+    with zipfile.ZipFile(docx_path, "r") as source_zip:
+        entries = {
+            info.filename: source_zip.read(info.filename)
+            for info in source_zip.infolist()
+        }
+
+    original_styles_xml = entries["word/styles.xml"]
+    styles_root = ET.fromstring(original_styles_xml)
+    old_style_id: str | None = None
+    for style in styles_root.findall(f"{{{W_NS}}}style"):
+        name = style.find(f"{{{W_NS}}}name")
+        if name is None or name.get(f"{{{W_NS}}}val") != "Normal":
+            continue
+        old_style_id = style.get(f"{{{W_NS}}}styleId") or style.get("styleId")
+        style.set(f"{{{W_NS}}}styleId", new_style_id)
+        break
+
+    if old_style_id is None:
+        raise AssertionError("Normal style not found in styles.xml")
+
+    for style in styles_root.findall(f"{{{W_NS}}}style"):
+        for dependency in ("basedOn", "next", "link"):
+            dependency_element = style.find(f"{{{W_NS}}}{dependency}")
+            if dependency_element is None:
+                continue
+            if dependency_element.get(f"{{{W_NS}}}val") == old_style_id:
+                dependency_element.set(f"{{{W_NS}}}val", new_style_id)
+
+    for prefix, uri in STYLE_XML_NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+
+    serialized = ET.tostring(
+        styles_root,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+    original_declaration = STYLE_XML_DECLARATION_PATTERN.search(original_styles_xml)
+    if original_declaration is not None:
+        serialized = STYLE_XML_DECLARATION_PATTERN.sub(
+            original_declaration.group(0),
+            serialized,
+            count=1,
+        )
+    original_root = STYLE_XML_ROOT_PATTERN.search(original_styles_xml)
+    serialized_root = STYLE_XML_ROOT_PATTERN.search(serialized)
+    if original_root is not None and serialized_root is not None:
+        serialized = (
+            serialized[: serialized_root.start()]
+            + original_root.group(0)
+            + serialized[serialized_root.end() :]
+        )
+
+    entries["word/styles.xml"] = serialized
+    with zipfile.ZipFile(docx_path, "w", compression=zipfile.ZIP_DEFLATED) as output_zip:
+        for filename, content in entries.items():
+            output_zip.writestr(filename, content)
 
 
 def cell_border_values(cell) -> dict[str, str]:
@@ -257,6 +358,41 @@ class SemanticStyleTests(unittest.TestCase):
         self.assertEqual(style_outline_level(recommended, "标题2"), 0)
         self.assertEqual(style_outline_level(recommended, "标题3"), 1)
         self.assertEqual(style_outline_level(recommended, "标题4"), 2)
+
+    def test_recommended_template_remaps_style_dependencies_to_target_style_ids(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        source_template = project_root / "voice-template.docx"
+        write_template(source_template, include_reference_block=False)
+
+        init_result = self.run_completed(
+            project_root,
+            "init_project.py",
+            "--template",
+            str(source_template),
+            "--force",
+        )
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        user_template = project_root / "templates" / "template.user.docx"
+        rewrite_normal_style_id(user_template, "a")
+        self.assertEqual(style_id(user_template, "Normal"), "a")
+
+        recommendation = self.run_json(project_root, "recommend_template_styles.py")
+        recommended = project_root / recommendation["recommended_template"].replace("./", "")
+        normal_style_id = style_id(recommended, "Normal")
+
+        self.assertEqual(normal_style_id, "a")
+        for style_name in ("题目", "标题2", "标题3", "正文", "图题", "表题", "参考文献"):
+            self.assertEqual(
+                style_dependency_value(recommended, style_name, "basedOn"),
+                normal_style_id,
+                msg=style_name,
+            )
+
+        report = validate_docx_package(recommended)
+        self.assertTrue(report["ok"], msg=report["errors"])
 
     def test_rendered_headings_use_semantic_word_styles(self) -> None:
         project_root = self.create_project()

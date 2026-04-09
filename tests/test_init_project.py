@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,20 @@ TEST_PNG_BYTES = base64.b64decode(
 )
 TEST_TEMP_ROOT = PROJECT_ROOT / "temp" / "init-project-tests"
 TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+STYLE_XML_DECLARATION_PATTERN = re.compile(rb"^<\?xml[^?]*\?>")
+STYLE_XML_ROOT_PATTERN = re.compile(rb"<(?:\w+:)?styles\b[^>]*>")
+STYLE_XML_NAMESPACES = {
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+    "w16cex": "http://schemas.microsoft.com/office/word/2018/wordml/cex",
+    "w16cid": "http://schemas.microsoft.com/office/word/2016/wordml/cid",
+    "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
+    "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+}
 
 
 class RepoTemporaryDirectory:
@@ -94,7 +109,8 @@ def strip_list_styles(path: Path) -> None:
             for info in source_zip.infolist()
         }
 
-    styles_root = ET.fromstring(entries["word/styles.xml"])
+    original_styles_xml = entries["word/styles.xml"]
+    styles_root = ET.fromstring(original_styles_xml)
     for child in list(styles_root):
         if child.tag == qn_local("style"):
             name_element = child.find(qn_local("name"))
@@ -111,9 +127,27 @@ def strip_list_styles(path: Path) -> None:
                 ):
                     child.remove(latent)
 
-    entries["word/styles.xml"] = ET.tostring(
-        styles_root, encoding="utf-8", xml_declaration=True
-    )
+    for prefix, uri in STYLE_XML_NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+
+    serialized = ET.tostring(styles_root, encoding="utf-8", xml_declaration=True)
+    original_declaration = STYLE_XML_DECLARATION_PATTERN.search(original_styles_xml)
+    if original_declaration is not None:
+        serialized = STYLE_XML_DECLARATION_PATTERN.sub(
+            original_declaration.group(0),
+            serialized,
+            count=1,
+        )
+    original_root = STYLE_XML_ROOT_PATTERN.search(original_styles_xml)
+    serialized_root = STYLE_XML_ROOT_PATTERN.search(serialized)
+    if original_root is not None and serialized_root is not None:
+        serialized = (
+            serialized[: serialized_root.start()]
+            + original_root.group(0)
+            + serialized[serialized_root.end() :]
+        )
+
+    entries["word/styles.xml"] = serialized
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as output_zip:
         for filename, content in entries.items():
             output_zip.writestr(filename, content)
