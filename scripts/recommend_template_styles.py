@@ -35,6 +35,19 @@ OUTLINE_STYLE_LEVELS = {
     "标题3": 1,
     "标题4": 2,
 }
+FALLBACK_STYLE_SOURCES = {
+    "题目": ("Title",),
+    "标题2": ("Heading 1",),
+    "标题3": ("Heading 2",),
+    "标题4": ("Heading 3",),
+    "正文": ("Body Text", "Normal"),
+    "列表编号": ("List Number",),
+    "列表符号": ("List Bullet",),
+    "图题": ("Caption",),
+    "表题": ("Caption",),
+    "参考文献": ("Body Text", "Normal"),
+    "Caption": ("Caption",),
+}
 STYLE_REFERENCE_ATTRIBUTES = ("basedOn", "next", "link")
 STYLE_XML_DECLARATION_PATTERN = re.compile(rb"^<\?xml[^?]*\?>")
 STYLE_XML_ROOT_PATTERN = re.compile(rb"<w:styles\b[^>]*>")
@@ -96,6 +109,35 @@ def set_style_id(style_element: ET.Element, value: str) -> None:
     style_element.set(attribute_name(style_element, "styleId"), value)
 
 
+def set_style_name(style_element: ET.Element, value: str) -> None:
+    name_element = style_element.find(qn("name"))
+    if name_element is None:
+        name_element = ET.Element(qn("name"))
+        style_element.insert(0, name_element)
+    name_element.set(qn("val"), value)
+
+
+def ensure_paragraph_properties(style_element: ET.Element) -> ET.Element:
+    p_pr = style_element.find(qn("pPr"))
+    if p_pr is None:
+        p_pr = ET.Element(qn("pPr"))
+        style_element.append(p_pr)
+    return p_pr
+
+
+def set_outline_level(style_element: ET.Element, expected_level: int | None) -> None:
+    p_pr = ensure_paragraph_properties(style_element)
+    outline = p_pr.find(qn("outlineLvl"))
+    if expected_level is None:
+        if outline is not None:
+            p_pr.remove(outline)
+        return
+    if outline is None:
+        outline = ET.Element(qn("outlineLvl"))
+        p_pr.append(outline)
+    outline.set(qn("val"), str(expected_level))
+
+
 def outline_level(style_element: ET.Element) -> int | None:
     p_pr = style_element.find(qn("pPr"))
     if p_pr is None:
@@ -108,10 +150,20 @@ def outline_level(style_element: ET.Element) -> int | None:
 
 
 def style_by_name(styles_root: ET.Element, target_name: str) -> ET.Element | None:
+    target_key = target_name.casefold()
     for style in styles_root.findall(qn("style")):
-        if style_name(style) == target_name:
+        current_name = style_name(style)
+        if current_name is not None and current_name.casefold() == target_key:
             return style
     return None
+
+
+def clone_style_for_target(source_style: ET.Element, target_name: str) -> ET.Element:
+    style_copy = deepcopy(source_style)
+    set_style_name(style_copy, target_name)
+    set_style_id(style_copy, target_name)
+    set_outline_level(style_copy, OUTLINE_STYLE_LEVELS.get(target_name))
+    return style_copy
 
 
 def style_ids_by_name(styles_root: ET.Element) -> dict[str, str]:
@@ -221,13 +273,8 @@ def merge_missing_styles(
     user_template: Path, donor_template: Path, recommended_template: Path
 ) -> tuple[list[str], list[str], list[str]]:
     user_style_names = style_names(user_template)
-    donor_style_names = style_names(donor_template)
     missing_styles = [
         name for name in TARGET_STYLE_NAMES if name not in user_style_names
-    ]
-    copied_styles = [name for name in missing_styles if name in donor_style_names]
-    unresolved_styles = [
-        name for name in missing_styles if name not in donor_style_names
     ]
 
     with zipfile.ZipFile(user_template, "r") as user_zip:
@@ -247,21 +294,51 @@ def merge_missing_styles(
         if name
     }
     donor_style_names_by_id = style_names_by_id(donor_styles_root)
+    user_style_names_by_id = style_names_by_id(user_styles_root)
+
+    def style_source_for_target(
+        style_name_value: str,
+    ) -> tuple[ET.Element, dict[str, str]] | None:
+        donor_style = donor_styles.get(style_name_value)
+        if donor_style is not None:
+            return (
+                clone_style_for_target(donor_style, style_name_value),
+                donor_style_names_by_id,
+            )
+        for styles_root, names_by_id in (
+            (donor_styles_root, donor_style_names_by_id),
+            (user_styles_root, user_style_names_by_id),
+        ):
+            for fallback_name in FALLBACK_STYLE_SOURCES.get(style_name_value, ()):
+                fallback_style = style_by_name(styles_root, fallback_name)
+                if fallback_style is None:
+                    continue
+                return (
+                    clone_style_for_target(fallback_style, style_name_value),
+                    names_by_id,
+                )
+        return None
+
+    style_sources = {
+        style_name_value: source
+        for style_name_value in TARGET_STYLE_NAMES
+        for source in [style_source_for_target(style_name_value)]
+        if source is not None
+    }
+    copied_styles = [name for name in missing_styles if name in style_sources]
+    unresolved_styles = [name for name in missing_styles if name not in style_sources]
 
     outline_replacements = []
     for style_name_value, expected_outline in OUTLINE_STYLE_LEVELS.items():
-        donor_style = donor_styles.get(style_name_value)
         user_style = style_by_name(user_styles_root, style_name_value)
-        if donor_style is None or user_style is None:
+        if style_name_value not in style_sources or user_style is None:
             continue
         if outline_level(user_style) != expected_outline:
             outline_replacements.append(style_name_value)
 
     final_style_ids_by_name = style_ids_by_name(user_styles_root)
     for style_name_value in set(copied_styles + outline_replacements):
-        donor_style = donor_styles.get(style_name_value)
-        if donor_style is None:
-            continue
+        donor_style, _ = style_sources[style_name_value]
         existing = style_by_name(user_styles_root, style_name_value)
         existing_style_id = None if existing is None else style_id(existing)
         donor_style_id = style_id(donor_style)
@@ -271,26 +348,22 @@ def merge_missing_styles(
 
     replaced_styles: list[str] = []
     for style_name_value in copied_styles:
-        donor_style = donor_styles.get(style_name_value)
-        if donor_style is None:
-            continue
+        donor_style, donor_style_names = style_sources[style_name_value]
         replace_or_append_style(
             user_styles_root,
             donor_style,
             style_name_value=style_name_value,
-            donor_style_names_by_id=donor_style_names_by_id,
+            donor_style_names_by_id=donor_style_names,
             final_style_ids_by_name=final_style_ids_by_name,
         )
 
     for style_name_value in outline_replacements:
-        donor_style = donor_styles.get(style_name_value)
-        if donor_style is None:
-            continue
+        donor_style, donor_style_names = style_sources[style_name_value]
         replace_or_append_style(
             user_styles_root,
             donor_style,
             style_name_value=style_name_value,
-            donor_style_names_by_id=donor_style_names_by_id,
+            donor_style_names_by_id=donor_style_names,
             final_style_ids_by_name=final_style_ids_by_name,
         )
         if style_name_value not in copied_styles:

@@ -114,6 +114,11 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn("bookmarkStart", xml)
         self.assertIn("bookmarkEnd", xml)
         self.assertIn('w:name="fig_0001"', xml)
+        start_index = xml.index("bookmarkStart")
+        text_index = xml.index("Figure target")
+        end_index = xml.index("bookmarkEnd")
+        self.assertLess(start_index, text_index)
+        self.assertLess(text_index, end_index)
 
     def test_add_complex_field_builds_valid_field_chars(self) -> None:
         from scripts._docx_fields import append_complex_field
@@ -141,7 +146,8 @@ class WordFieldTests(unittest.TestCase):
 
         xml = toc_paragraph._p.xml
         self.assertIn("TOC", xml)
-        self.assertIn("\\\\o", xml)
+        self.assertIn("\\o", xml)
+        self.assertNotIn("\\\\o", xml)
         self.assertIn("1-3", xml)
 
     def test_insert_seq_field_creates_caption_number_field(self) -> None:
@@ -150,12 +156,14 @@ class WordFieldTests(unittest.TestCase):
         document = docx.Document()
         paragraph = document.add_paragraph("图")
 
-        append_complex_field(paragraph, " SEQ 图 \\\\* ARABIC ", display_text="1")
+        append_complex_field(paragraph, " SEQ 图 \\* ARABIC ", display_text="1")
 
         xml = paragraph._p.xml
         self.assertIn("SEQ 图", xml)
         self.assertIn('fldCharType="begin"', xml)
         self.assertIn('fldCharType="end"', xml)
+        self.assertIn("\\* ARABIC", xml)
+        self.assertNotIn("\\\\* ARABIC", xml)
 
     def test_figure_caption_uses_seq_field_and_bookmark(self) -> None:
         project_root = self.create_project()
@@ -177,6 +185,13 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn("SEQ 图", caption._p.xml)
         self.assertIn("bookmarkStart", caption._p.xml)
         self.assertIn("fig_0001", caption._p.xml)
+        self.assertIn("\\* ARABIC", caption._p.xml)
+        self.assertNotIn("\\\\* ARABIC", caption._p.xml)
+        start_index = caption._p.xml.index("bookmarkStart")
+        text_index = caption._p.xml.index(">图<")
+        end_index = caption._p.xml.index("bookmarkEnd")
+        self.assertLess(start_index, text_index)
+        self.assertLess(text_index, end_index)
 
     def test_table_caption_uses_seq_field_and_bookmark(self) -> None:
         project_root = self.create_project()
@@ -195,6 +210,13 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn("SEQ 表", caption._p.xml)
         self.assertIn("bookmarkStart", caption._p.xml)
         self.assertIn("tbl_0001", caption._p.xml)
+        self.assertIn("\\* ARABIC", caption._p.xml)
+        self.assertNotIn("\\\\* ARABIC", caption._p.xml)
+        start_index = caption._p.xml.index("bookmarkStart")
+        text_index = caption._p.xml.index(">表<")
+        end_index = caption._p.xml.index("bookmarkEnd")
+        self.assertLess(start_index, text_index)
+        self.assertLess(text_index, end_index)
 
     def test_caption_and_target_use_keep_with_next_not_group_object(self) -> None:
         project_root = self.create_project()
@@ -246,6 +268,26 @@ class WordFieldTests(unittest.TestCase):
         enabled_doc = docx.Document(project_root / "out" / "redacted.docx")
         self.assertTrue(any(" TOC " in paragraph._p.xml for paragraph in enabled_doc.paragraphs))
 
+    def test_build_report_does_not_force_field_update_on_open_by_default(self) -> None:
+        project_root = self.create_project()
+        image_path = project_root / "docs" / "images" / "arch.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(TEST_PNG_BYTES)
+        (project_root / "docs" / "report_body.md").write_text(
+            "## Figures\n\n![Architecture](images/arch.png)\n\n[[REF:figure:fig_0001|见下图]]\n",
+            encoding="utf-8",
+        )
+        self.set_cross_reference_confirmation(project_root, True)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import zipfile
+
+        with zipfile.ZipFile(project_root / "out" / "redacted.docx", "r") as docx_zip:
+            settings_xml = docx_zip.read("word/settings.xml").decode("utf-8")
+        self.assertNotIn("updateFields", settings_xml)
+
     def test_inserted_toc_uses_standard_toc_field(self) -> None:
         project_root = self.create_project()
         self.insert_toc_placeholder(project_root)
@@ -261,7 +303,8 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn('fldCharType="begin"', toc_paragraph._p.xml)
         self.assertIn('fldCharType="separate"', toc_paragraph._p.xml)
         self.assertIn('fldCharType="end"', toc_paragraph._p.xml)
-        self.assertIn('TOC \\\\o "1-3"', toc_paragraph._p.xml)
+        self.assertIn('TOC \\o "1-3"', toc_paragraph._p.xml)
+        self.assertNotIn('TOC \\\\o "1-3"', toc_paragraph._p.xml)
 
     def test_default_repo_toc_formatting_matches_policy(self) -> None:
         project_root = self.create_project()
@@ -304,6 +347,8 @@ class WordFieldTests(unittest.TestCase):
 
         self.assertEqual(paragraph.text.strip(), "见下图1 展示了系统结构。")
         self.assertIn("REF fig_0001", paragraph._p.xml)
+        self.assertIn("\\h", paragraph._p.xml)
+        self.assertNotIn("\\\\h", paragraph._p.xml)
         self.assertIn(">图1<", paragraph._p.xml)
         self.assertNotIn("[[REF:figure:fig_0001|见下图]]", paragraph._p.xml)
 
@@ -326,6 +371,8 @@ class WordFieldTests(unittest.TestCase):
 
         self.assertEqual(paragraph.text.strip(), "见上表1 汇总了实验结果。")
         self.assertIn("REF tbl_0001", paragraph._p.xml)
+        self.assertIn("\\h", paragraph._p.xml)
+        self.assertNotIn("\\\\h", paragraph._p.xml)
         self.assertIn(">表1<", paragraph._p.xml)
         self.assertNotIn("[[REF:table:tbl_0001|见上表]]", paragraph._p.xml)
 

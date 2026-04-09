@@ -15,7 +15,6 @@ from scripts._docx_integrity import validate_docx_package
 from scripts._docx_fields import (
     add_bookmark,
     append_reference_field,
-    enable_update_fields_on_open,
     insert_toc_field,
 )
 from scripts._docx_xml import (
@@ -30,6 +29,11 @@ from scripts._report_markdown import (
     parse_paragraph_segments,
 )
 from scripts._report_render import load_code_block_theme, render_blocks
+from scripts._report_render import (
+    apply_paragraph_font_settings,
+    body_style_name,
+    style_font_settings,
+)
 from scripts._shared import emit_json, import_docx, load_json, project_path
 
 
@@ -145,6 +149,7 @@ def reference_label(target_kind: str, target_id: str) -> str:
 def strip_section_prefix(text: str) -> str:
     normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", text.strip())
     normalized = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", normalized)
+    normalized = re.sub(r"[:：]\s*$", "", normalized)
     return normalized.strip().lower()
 
 
@@ -235,6 +240,15 @@ def bibliography_style_name(doc) -> str | None:
     return None
 
 
+def normalize_reference_paragraph(paragraph, body_font: dict[str, str] | None) -> None:
+    shared_module = importlib.import_module("docx.shared")
+    Pt = shared_module.Pt
+    paragraph.paragraph_format.left_indent = Pt(0)
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.5
+    apply_paragraph_font_settings(paragraph, body_font)
+
+
 def append_bibliography_output(
     doc, plan: dict[str, object], project_root: Path | str
 ) -> None:
@@ -257,13 +271,18 @@ def append_bibliography_output(
         return
 
     style_name = bibliography_style_name(doc)
+    available_styles = {
+        style.name for style in doc.styles if getattr(style, "name", None)
+    }
+    body_font = style_font_settings(doc.styles, body_style_name(available_styles))
     last = heading
     for entry in entries:
         paragraph = insert_paragraph_after(last)
         if style_name:
             paragraph.style = style_name
-        add_bookmark(paragraph, entry["bookmark"])
         paragraph.add_run(entry["rendered_text"])
+        add_bookmark(paragraph, entry["bookmark"])
+        normalize_reference_paragraph(paragraph, body_font)
         last = paragraph
 
 
@@ -324,7 +343,6 @@ def main() -> int:
     apply_toc_if_enabled(doc, plan)
     append_bibliography_output(doc, plan, args.project_root)
     apply_cross_reference_pass(doc, plan)
-    enable_update_fields_on_open(doc)
     doc.save(redacted_path)
     integrity_report = validate_docx_package(redacted_path)
     payload = {

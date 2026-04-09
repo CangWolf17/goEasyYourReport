@@ -311,6 +311,17 @@ def format_table_cell_paragraph(paragraph) -> None:
     ).WD_ALIGN_PARAGRAPH.CENTER
 
 
+def format_reference_entry_paragraph(
+    paragraph, body_font: dict[str, str] | None
+) -> None:
+    shared_module = importlib.import_module("docx.shared")
+    Pt = shared_module.Pt
+    paragraph.paragraph_format.left_indent = Pt(0)
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.5
+    apply_paragraph_font_settings(paragraph, body_font)
+
+
 def table_cell_font_settings() -> dict[str, str]:
     return {
         "ascii": "宋体",
@@ -546,14 +557,6 @@ def insert_markdown_table_after(block, rows: list[list[str]], width):
 
     table_module = importlib.import_module("docx.enum.table")
     table.alignment = table_module.WD_TABLE_ALIGNMENT.CENTER
-    style_names = {
-        style.name
-        for style in parent.part.document.styles
-        if getattr(style, "name", None)
-    }
-    table_style = preferred_style_name(style_names, "Table Grid", "Normal Table")
-    if table_style is not None:
-        table.style = table_style
 
     for row_index, row_values in enumerate(rows):
         for col_index, value in enumerate(row_values):
@@ -595,15 +598,15 @@ def apply_caption_field(
     clear_paragraph(paragraph)
     apply_named_style(paragraph, style_name)
     set_paragraph_pagination(paragraph, keep_next=True, keep_lines=True)
-    add_bookmark(paragraph, bookmark_name)
     paragraph.add_run(prefix)
     append_complex_field(
         paragraph,
-        f" SEQ {sequence_name} \\\\* ARABIC ",
+        f" SEQ {sequence_name} \\* ARABIC ",
         display_text=str(ordinal),
     )
     if label and label.strip():
         paragraph.add_run(f" {label.strip()}")
+    add_bookmark(paragraph, bookmark_name)
 
 
 def equation_ordinal(block: dict[str, object]) -> int:
@@ -646,16 +649,17 @@ def apply_equation_block(
     ).WD_ALIGN_PARAGRAPH.CENTER
     set_paragraph_pagination(paragraph, keep_lines=True)
     bookmark_name = str(block.get("id", "eq_0001"))
-    add_bookmark(paragraph, bookmark_name)
     latex = str(block.get("latex", "")).strip()
     try:
         o_math_para = create_word_element("m:oMathPara")
         o_math_para.append(latex_to_omml(latex))
         paragraph._p.append(o_math_para)
         paragraph.add_run(f"({equation_ordinal(block)})")
+        add_bookmark(paragraph, bookmark_name)
     except UnsupportedEquationSyntax:
         record_unsupported_equation(equation_status, latex)
         paragraph.add_run(f"$${latex}$$")
+        add_bookmark(paragraph, bookmark_name)
 
 
 def caption_label_from_heading(text: str) -> str:
@@ -805,6 +809,7 @@ def render_blocks(
     available_styles = {
         style.name for style in doc.styles if getattr(style, "name", None)
     }
+    body_font = style_font_settings(doc.styles, body_style_name(available_styles))
     width = content_width(doc)
     image_status: dict[str, list[dict[str, str]]] = {"inserted": [], "failed": []}
     figure_index = 0
@@ -914,6 +919,12 @@ def render_blocks(
                 equation_status=equation_status,
             )
             used_last = current
+        if (
+            reference_output_enabled
+            and in_reference_section
+            and first_block.get("kind") in {"paragraph", "list_item"}
+        ):
+            format_reference_entry_paragraph(used_last, body_font)
         if first_kind == "heading":
             last_heading_text = str(first_block.get("text", "")).strip()
             in_reference_section = (
@@ -993,6 +1004,12 @@ def render_blocks(
                 forced_style=forced_style or paragraph_style_for_block(block),
                 equation_status=equation_status,
             )
+            if (
+                reference_output_enabled
+                and in_reference_section
+                and block.get("kind") in {"paragraph", "list_item"}
+            ):
+                format_reference_entry_paragraph(used_last, body_font)
             if block.get("kind") == "heading":
                 last_heading_text = str(block.get("text", "")).strip()
                 in_reference_section = (

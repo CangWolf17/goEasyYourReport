@@ -144,6 +144,7 @@ def detect_toc_signal(paragraphs: list[object]) -> dict[str, object]:
 def strip_section_prefix(text: str) -> str:
     normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", text.strip())
     normalized = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", normalized)
+    normalized = re.sub(r"[:：]\s*$", "", normalized)
     return normalized.strip().lower()
 
 
@@ -225,6 +226,27 @@ def apply_default_table_rules(
     del template_overrides
 
     xml_module = importlib.import_module("docx.oxml")
+    ns_module = importlib.import_module("docx.oxml.ns")
+
+    tbl_pr = table._tbl.tblPr
+    tbl_style = tbl_pr.find(ns_module.qn("w:tblStyle"))
+    if tbl_style is not None:
+        tbl_pr.remove(tbl_style)
+
+    tbl_borders = tbl_pr.find(ns_module.qn("w:tblBorders"))
+    if tbl_borders is None:
+        tbl_borders = xml_module.OxmlElement("w:tblBorders")
+        tbl_pr.append(tbl_borders)
+
+    def set_table_border(edge: str, value: str) -> None:
+        element = tbl_borders.find(ns_module.qn(f"w:{edge}"))
+        if element is None:
+            element = xml_module.OxmlElement(f"w:{edge}")
+            tbl_borders.append(element)
+        element.set(ns_module.qn("w:val"), value)
+
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        set_table_border(edge, "nil")
 
     def set_border(cell, edge: str, enabled: bool) -> None:
         tc_pr = cell._tc.get_or_add_tcPr()

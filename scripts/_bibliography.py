@@ -11,6 +11,7 @@ REFERENCE_SECTION_TITLES = {"参考文献", "references"}
 def strip_section_prefix(text: str) -> str:
     normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", text.strip())
     normalized = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", normalized)
+    normalized = re.sub(r"[:：]\s*$", "", normalized)
     return normalized.strip().lower()
 
 

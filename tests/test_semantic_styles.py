@@ -275,6 +275,20 @@ class SemanticStyleTests(unittest.TestCase):
 
         self.assertEqual(scan["reference_block"]["present"], False)
 
+    def test_scan_template_detects_reference_block_with_trailing_colon(self) -> None:
+        project_root = self.create_project()
+        template_path = project_root / "templates" / "template.user.docx"
+        document = docx.Document(template_path)
+        heading = next(
+            paragraph for paragraph in document.paragraphs if paragraph.text.strip() == "二、参考文献"
+        )
+        heading.text = "二、参考文献："
+        document.save(template_path)
+
+        scan = self.run_json(project_root, "scan_template.py")
+
+        self.assertEqual(scan["reference_block"]["present"], True)
+
     def test_build_preview_includes_semantic_confirmation_payload(self) -> None:
         project_root = self.create_project()
         self.write_user_template(project_root, include_toc=True)
@@ -353,6 +367,38 @@ class SemanticStyleTests(unittest.TestCase):
 
         self.assertIn("题目", style_names)
         self.assertIn("标题2", style_names)
+        self.assertIn("列表编号", style_names)
+        self.assertIn("列表符号", style_names)
+        self.assertEqual(style_outline_level(recommended, "标题2"), 0)
+        self.assertEqual(style_outline_level(recommended, "标题3"), 1)
+        self.assertEqual(style_outline_level(recommended, "标题4"), 2)
+
+    def test_recommended_template_falls_back_to_repo_donor_when_project_sample_is_stale(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        source_template = project_root / "voice-template.docx"
+        write_template(source_template, include_reference_block=False)
+
+        init_result = self.run_completed(
+            project_root,
+            "init_project.py",
+            "--template",
+            str(source_template),
+            "--force",
+        )
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        stale_sample = project_root / "templates" / "template.sample.docx"
+        write_template(stale_sample, include_reference_block=False)
+
+        recommendation = self.run_json(project_root, "recommend_template_styles.py")
+        recommended = project_root / recommendation["recommended_template"].replace("./", "")
+        document = docx.Document(recommended)
+        style_names = {
+            style.name for style in document.styles if getattr(style, "name", None)
+        }
+
         self.assertIn("列表编号", style_names)
         self.assertIn("列表符号", style_names)
         self.assertEqual(style_outline_level(recommended, "标题2"), 0)
@@ -506,6 +552,9 @@ class SemanticStyleTests(unittest.TestCase):
         self.assertNotIn("top", cell_border_values(middle_row))
         self.assertNotIn("bottom", cell_border_values(middle_row))
         self.assertEqual(cell_border_values(last_row).get("bottom"), "single")
+        self.assertIn('insideH w:val="nil"', table._tbl.xml)
+        self.assertIn('insideV w:val="nil"', table._tbl.xml)
+        self.assertNotIn("tblStyle", table._tbl.xml)
 
     def test_first_column_bold_heuristic_only_applies_to_row_labels(self) -> None:
         project_root = self.create_project()

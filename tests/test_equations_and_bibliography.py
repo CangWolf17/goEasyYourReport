@@ -222,6 +222,70 @@ class BibliographyStrategyTests(ProjectHarness):
         self.assertIn("REF ref_0001", reference_paragraph._p.xml)
         self.assertIn(">[1]<", reference_paragraph._p.xml)
 
+    def test_generated_bibliography_entries_use_body_font_and_no_hanging_indent(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        self.update_bibliography_plan(
+            project_root,
+            source_mode="agent_generate_verified_only",
+            output_block_present=True,
+        )
+        self.write_bibliography_sources(
+            project_root,
+            [
+                {
+                    "id": "ref_0001",
+                    "title": "Example Paper",
+                    "authors": ["Alice", "Bob"],
+                    "year": "2024",
+                    "container": "Journal Name",
+                    "doi": "10.1000/example",
+                }
+            ],
+        )
+        (project_root / "docs" / "report_body.md").write_text(
+            "## 参考文献\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import docx
+
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+        paragraph = next(item for item in redacted.paragraphs if item.text.strip().startswith("[1]"))
+
+        self.assertEqual(paragraph.style.name, "参考文献")
+        self.assertEqual(paragraph.paragraph_format.left_indent.pt, 0.0)
+        self.assertEqual(paragraph.paragraph_format.first_line_indent.pt, 0.0)
+        self.assertEqual(paragraph.runs[0].font.size.pt, 14.0)
+
+    def test_reference_section_list_entries_reset_to_flush_left_format(self) -> None:
+        project_root = self.create_project()
+        self.update_bibliography_plan(
+            project_root,
+            source_mode="agent_generate_verified_only",
+            output_block_present=True,
+        )
+        (project_root / "docs" / "report_body.md").write_text(
+            "## 参考文献\n\n1. Author. Title[J]. Journal, 2024.\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import docx
+
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+        paragraph = next(item for item in redacted.paragraphs if "Author. Title" in item.text)
+
+        self.assertEqual(paragraph.style.name, "参考文献")
+        self.assertEqual(paragraph.paragraph_format.left_indent.pt, 0.0)
+        self.assertEqual(paragraph.paragraph_format.first_line_indent.pt, 0.0)
+
     def test_bibliography_cross_reference_is_suppressed_when_output_block_missing(
         self,
     ) -> None:
@@ -362,6 +426,11 @@ class EquationRenderingTests(ProjectHarness):
         self.assertIn("(1)", paragraph.text)
         self.assertIn("bookmarkStart", paragraph._p.xml)
         self.assertIn("eq_0001", paragraph._p.xml)
+        start_index = paragraph._p.xml.index("bookmarkStart")
+        math_index = paragraph._p.xml.index("<m:oMath")
+        end_index = paragraph._p.xml.index("bookmarkEnd")
+        self.assertLess(start_index, math_index)
+        self.assertLess(math_index, end_index)
 
     def test_equation_cross_reference_renders_formula_label(self) -> None:
         project_root = self.create_project()
