@@ -116,9 +116,16 @@ def apply_named_style(paragraph, style_name: str | None) -> None:
         paragraph.style = style_name
 
 
+def normalize_section_heading(text: str) -> str:
+    normalized = text.strip()
+    normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", normalized)
+    normalized = re.sub(r"^\s*\d+(?:\s*\.\s*\d+)*(?:[.)、])?\s*", "", normalized)
+    normalized = re.sub(r"[:：]\s*$", "", normalized)
+    return normalized.strip().lower()
+
+
 def is_reference_section_title(text: str) -> bool:
-    lowered = text.strip().lower()
-    return any(token in lowered for token in REFERENCE_SECTION_TITLES)
+    return normalize_section_heading(text) in REFERENCE_SECTION_TITLES
 
 
 def normalize_hex_color(value: str) -> str:

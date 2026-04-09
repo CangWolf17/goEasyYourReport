@@ -1920,6 +1920,62 @@ class InitProjectTests(unittest.TestCase):
                 "参考文献",
             )
 
+    def test_reference_citation_section_does_not_reuse_reference_entry_style(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## 参考文献引用测试\n\n本节专门覆盖文献交叉引用，不应继承参考文献条目样式。\n\n## 参考文献\n\n[1] 作者. 题名[J]. 期刊名, 2024, 1(1): 1-10.\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            citation_paragraph = next(
+                paragraph
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+                == "本节专门覆盖文献交叉引用，不应继承参考文献条目样式。"
+            )
+            reference_paragraph = next(
+                paragraph
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip().startswith("[1] 作者.")
+            )
+
+            self.assertNotEqual(citation_paragraph.style.name, "参考文献")
+            self.assertIn(citation_paragraph.style.name, {"正文", "正文1", "Normal"})
+            self.assertIsNone(citation_paragraph.paragraph_format.left_indent)
+            self.assertIsNone(citation_paragraph.paragraph_format.first_line_indent)
+            self.assertNotEqual(
+                citation_paragraph.style.name,
+                reference_paragraph.style.name,
+            )
+
     def test_build_report_reports_failed_image_insertions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
