@@ -4,6 +4,7 @@ import argparse
 import importlib
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,45 +72,147 @@ def ensure_style_rpr(style):
     return r_pr
 
 
-def ensure_toc_styles(doc) -> None:
-    styles = doc.styles
-    enum_style = importlib.import_module("docx.enum.style")
+def ensure_style_ppr(style):
+    p_pr = style.element.find(word_qn("w:pPr"))
+    if p_pr is None:
+        p_pr = create_word_element("w:pPr")
+        style.element.append(p_pr)
+    return p_pr
+
+
+def find_style_by_id(styles, style_id: str):
+    for style in styles:
+        if getattr(style, "style_id", None) == style_id:
+            return style
+    return None
+
+
+def apply_toc_style_formatting(style) -> None:
     enum_text = importlib.import_module("docx.enum.text")
     shared = importlib.import_module("docx.shared")
     Pt = shared.Pt
 
+    style.font.name = "宋体"
+    style.font.size = Pt(14)
+    style.paragraph_format.alignment = enum_text.WD_ALIGN_PARAGRAPH.LEFT
+    style.paragraph_format.line_spacing = 1.5
+    style.paragraph_format.left_indent = Pt(0)
+    style.paragraph_format.first_line_indent = Pt(0)
+
+    p_pr = ensure_style_ppr(style)
+    spacing = p_pr.find(word_qn("w:spacing"))
+    if spacing is None:
+        spacing = create_word_element("w:spacing")
+        p_pr.append(spacing)
+    spacing.set(word_qn("w:line"), "360")
+    spacing.set(word_qn("w:lineRule"), "auto")
+
+    ind = p_pr.find(word_qn("w:ind"))
+    if ind is None:
+        ind = create_word_element("w:ind")
+        p_pr.append(ind)
+    for attribute in (
+        "w:left",
+        "w:leftChars",
+        "w:firstLine",
+        "w:firstLineChars",
+        "w:hanging",
+        "w:hangingChars",
+    ):
+        ind.set(word_qn(attribute), "0")
+
+    jc = p_pr.find(word_qn("w:jc"))
+    if jc is None:
+        jc = create_word_element("w:jc")
+        p_pr.append(jc)
+    jc.set(word_qn("w:val"), "left")
+
+    r_pr = ensure_style_rpr(style)
+    r_fonts = r_pr.find(word_qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = create_word_element("w:rFonts")
+        r_pr.append(r_fonts)
+    for key in ("ascii", "hAnsi", "eastAsia"):
+        r_fonts.set(word_qn(f"w:{key}"), "宋体")
+
+    size = r_pr.find(word_qn("w:sz"))
+    if size is None:
+        size = create_word_element("w:sz")
+        r_pr.append(size)
+    size.set(word_qn("w:val"), "28")
+
+    size_cs = r_pr.find(word_qn("w:szCs"))
+    if size_cs is None:
+        size_cs = create_word_element("w:szCs")
+        r_pr.append(size_cs)
+    size_cs.set(word_qn("w:val"), "28")
+
+
+def ensure_toc_styles(doc) -> None:
+    styles = doc.styles
+    enum_style = importlib.import_module("docx.enum.style")
+
     for style_name in ("目录1", "目录2", "目录3"):
         try:
-            styles[style_name]
-            continue
+            style = styles[style_name]
         except KeyError:
-            pass
+            style = styles.add_style(style_name, enum_style.WD_STYLE_TYPE.PARAGRAPH)
+        apply_toc_style_formatting(style)
 
-        style = styles.add_style(style_name, enum_style.WD_STYLE_TYPE.PARAGRAPH)
-        style.font.name = "宋体"
-        style.font.size = Pt(14)
-        style.paragraph_format.alignment = enum_text.WD_ALIGN_PARAGRAPH.LEFT
-        style.paragraph_format.line_spacing = 1.5
+    for style_id in ("TOC1", "TOC2", "TOC3"):
+        style = find_style_by_id(styles, style_id)
+        if style is not None:
+            apply_toc_style_formatting(style)
 
-        r_pr = ensure_style_rpr(style)
-        r_fonts = r_pr.find(word_qn("w:rFonts"))
-        if r_fonts is None:
-            r_fonts = create_word_element("w:rFonts")
-            r_pr.append(r_fonts)
-        for key in ("ascii", "hAnsi", "eastAsia"):
-            r_fonts.set(word_qn(f"w:{key}"), "宋体")
 
-        size = r_pr.find(word_qn("w:sz"))
-        if size is None:
-            size = create_word_element("w:sz")
-            r_pr.append(size)
-        size.set(word_qn("w:val"), "28")
+def toc_title_style_name(doc) -> str | None:
+    available_styles = {
+        style.name for style in doc.styles if getattr(style, "name", None)
+    }
+    for candidate in ("题目", "Title"):
+        if candidate in available_styles:
+            return candidate
+    return None
 
-        size_cs = r_pr.find(word_qn("w:szCs"))
-        if size_cs is None:
-            size_cs = create_word_element("w:szCs")
-            r_pr.append(size_cs)
-        size_cs.set(word_qn("w:val"), "28")
+
+def refresh_toc_with_word_if_available(docx_path: Path) -> bool:
+    if sys.platform != "win32":
+        return False
+
+    powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+    if not powershell:
+        return False
+
+    escaped = str(docx_path).replace("'", "''")
+    script = (
+        "$path = '{path}'; "
+        "$word = $null; $doc = $null; "
+        "try {{ "
+        "$word = New-Object -ComObject Word.Application; "
+        "$word.Visible = $false; "
+        "$word.DisplayAlerts = 0; "
+        "$doc = $word.Documents.Open($path, $false, $false); "
+        "if ($doc.TablesOfContents.Count -gt 0) {{ "
+        "for ($i = 1; $i -le $doc.TablesOfContents.Count; $i++) {{ "
+        "$doc.TablesOfContents.Item($i).Update() "
+        "}}; "
+        "$doc.Save(); "
+        "Write-Output 'updated' "
+        "}} "
+        "}} catch {{ "
+        "Write-Output 'skipped' "
+        "}} finally {{ "
+        "if ($doc -ne $null) {{ $doc.Close() }}; "
+        "if ($word -ne $null) {{ $word.Quit() }} "
+        "}}"
+    ).format(path=escaped)
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return result.returncode == 0 and "updated" in result.stdout
 
 
 def apply_toc_if_enabled(doc, plan: dict[str, object]) -> None:
@@ -123,8 +226,9 @@ def apply_toc_if_enabled(doc, plan: dict[str, object]) -> None:
         return
 
     ensure_toc_styles(doc)
-    anchor = find_toc_anchor(doc)
-    if anchor is None:
+    title_paragraph = find_toc_anchor(doc)
+    field_paragraph = None
+    if title_paragraph is None:
         fillable = plan.get("regions", {}).get("fillable", [])
         if not fillable:
             return
@@ -144,9 +248,10 @@ def apply_toc_if_enabled(doc, plan: dict[str, object]) -> None:
 
         if page_breaks_before_body:
             before_toc_break = page_breaks_before_body[0]
-            anchor = insert_paragraph_after(before_toc_break)
+            title_paragraph = insert_paragraph_after(before_toc_break)
+            field_paragraph = insert_paragraph_after(title_paragraph)
             if len(page_breaks_before_body) == 1:
-                after_toc_break = insert_paragraph_after(anchor)
+                after_toc_break = insert_paragraph_after(field_paragraph)
                 after_toc_break.add_run().add_break(
                     importlib.import_module("docx.enum.text").WD_BREAK.PAGE
                 )
@@ -157,21 +262,27 @@ def apply_toc_if_enabled(doc, plan: dict[str, object]) -> None:
                     if parent is not None:
                         parent.remove(extra_break._element)
         else:
-            anchor = insert_paragraph_before(body_anchor)
-            before_toc_break = insert_paragraph_before(anchor)
+            field_paragraph = insert_paragraph_before(body_anchor)
+            title_paragraph = insert_paragraph_before(field_paragraph)
+            before_toc_break = insert_paragraph_before(title_paragraph)
             before_toc_break.add_run().add_break(
                 importlib.import_module("docx.enum.text").WD_BREAK.PAGE
             )
-            after_toc_break = insert_paragraph_after(anchor)
+            after_toc_break = insert_paragraph_after(field_paragraph)
             after_toc_break.add_run().add_break(
                 importlib.import_module("docx.enum.text").WD_BREAK.PAGE
             )
+    else:
+        field_paragraph = insert_paragraph_after(title_paragraph)
 
-    style_name = anchor.style.name if getattr(anchor, "style", None) is not None else None
-    clear_paragraph(anchor)
-    if style_name:
-        anchor.style = style_name
-    insert_toc_field(anchor, (1, 3))
+    clear_paragraph(title_paragraph)
+    title_style = toc_title_style_name(doc)
+    if title_style:
+        title_paragraph.style = title_style
+    title_paragraph.add_run("目录")
+
+    clear_paragraph(field_paragraph)
+    insert_toc_field(field_paragraph, (1, 3), display_text="")
 
 
 def reference_label(target_kind: str, target_id: str) -> str:
@@ -287,7 +398,9 @@ def normalize_reference_paragraph(paragraph, body_font: dict[str, str] | None) -
     paragraph.paragraph_format.left_indent = Pt(0)
     paragraph.paragraph_format.first_line_indent = Pt(0)
     paragraph.paragraph_format.line_spacing = 1.5
-    apply_paragraph_font_settings(paragraph, body_font)
+    reference_font = dict(body_font or {})
+    reference_font["size"] = "21"
+    apply_paragraph_font_settings(paragraph, reference_font)
 
 
 def append_bibliography_output(
@@ -385,12 +498,25 @@ def main() -> int:
     append_bibliography_output(doc, plan, args.project_root)
     apply_cross_reference_pass(doc, plan)
     doc.save(redacted_path)
+    toc_refresh_status = {
+        "attempted": bool(plan.get("semantics", {}).get("toc", {}).get("enabled")),
+        "updated": False,
+    }
+    if toc_refresh_status["attempted"]:
+        toc_refresh_status["updated"] = refresh_toc_with_word_if_available(
+            redacted_path
+        )
+        if toc_refresh_status["updated"]:
+            refreshed_doc = docx.Document(redacted_path)
+            ensure_toc_styles(refreshed_doc)
+            refreshed_doc.save(redacted_path)
     integrity_report = validate_docx_package(redacted_path)
     payload = {
         "redacted": str(redacted_path),
         "images": image_status,
         "code_blocks": code_status,
         "equations": equation_status,
+        "toc_refresh": toc_refresh_status,
         "integrity": integrity_report,
     }
     if not integrity_report["ok"]:

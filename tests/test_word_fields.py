@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import subprocess
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -16,6 +17,7 @@ from scripts._docx_xml import insert_paragraph_after
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(r"D:\Miniconda\python.exe")
+WINWORD = Path(r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE")
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 TEST_PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
@@ -118,6 +120,38 @@ class WordFieldTests(unittest.TestCase):
 
         scan_result = self.run_completed(project_root, "scan_template.py")
         self.assertEqual(scan_result.returncode, 0, msg=scan_result.stderr)
+
+    def write_report_body(self, project_root: Path, content: str) -> None:
+        (project_root / "docs" / "report_body.md").write_text(
+            content,
+            encoding="utf-8",
+        )
+
+    def assert_toc_style_matches_policy(self, style) -> None:
+        self.assertEqual(style.font.name, "宋体")
+        self.assertIsNotNone(style.font.size)
+        self.assertEqual(style.font.size.pt, 14.0)
+        self.assertEqual(style.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+        self.assertEqual(style.paragraph_format.line_spacing, 1.5)
+        self.assertIsNotNone(style.paragraph_format.left_indent)
+        self.assertEqual(style.paragraph_format.left_indent.pt, 0.0)
+        self.assertIsNotNone(style.paragraph_format.first_line_indent)
+        self.assertEqual(style.paragraph_format.first_line_indent.pt, 0.0)
+
+        r_pr = style.element.find(f"{{{W_NS}}}rPr")
+        self.assertIsNotNone(r_pr)
+        r_fonts = r_pr.find(f"{{{W_NS}}}rFonts")
+        self.assertIsNotNone(r_fonts)
+        self.assertEqual(r_fonts.get(f"{{{W_NS}}}ascii"), "宋体")
+        self.assertEqual(r_fonts.get(f"{{{W_NS}}}hAnsi"), "宋体")
+        self.assertEqual(r_fonts.get(f"{{{W_NS}}}eastAsia"), "宋体")
+
+        size = r_pr.find(f"{{{W_NS}}}sz")
+        size_cs = r_pr.find(f"{{{W_NS}}}szCs")
+        self.assertIsNotNone(size)
+        self.assertEqual(size.get(f"{{{W_NS}}}val"), "28")
+        self.assertIsNotNone(size_cs)
+        self.assertEqual(size_cs.get(f"{{{W_NS}}}val"), "28")
 
     def test_add_bookmark_wraps_target_range(self) -> None:
         from scripts._docx_fields import add_bookmark
@@ -323,6 +357,57 @@ class WordFieldTests(unittest.TestCase):
         self.assertIn('TOC \\o "1-3"', toc_paragraph._p.xml)
         self.assertNotIn('TOC \\\\o "1-3"', toc_paragraph._p.xml)
 
+    def test_inserted_toc_uses_separate_title_paragraph_with_title_style(self) -> None:
+        project_root = self.create_project()
+        self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        redacted = docx.Document(project_root / "out" / "redacted.docx")
+        toc_title_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if paragraph.text.strip() == "目录"
+        )
+        toc_field_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if " TOC " in paragraph._p.xml
+        )
+
+        self.assertEqual(redacted.paragraphs[toc_title_index].style.name, "题目")
+        self.assertLess(toc_title_index, toc_field_index)
+        if payload["toc_refresh"]["updated"]:
+            self.assertNotEqual(redacted.paragraphs[toc_field_index].text.strip(), "")
+            self.assertIn(
+                redacted.paragraphs[toc_field_index].style.style_id,
+                {"TOC1", "TOC2", "TOC3"},
+            )
+        else:
+            self.assertEqual(redacted.paragraphs[toc_field_index].text.strip(), "")
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and WINWORD.exists(),
+        "Word automation is only available on Windows with Word installed",
+    )
+    def test_build_report_populates_toc_entries_when_word_automation_is_available(
+        self,
+    ) -> None:
+        project_root = self.create_project()
+        self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
+
+        result = self.run_completed(project_root, "build_report.py")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        import zipfile
+
+        with zipfile.ZipFile(project_root / "out" / "redacted.docx", "r") as docx_zip:
+            document_xml = docx_zip.read("word/document.xml").decode("utf-8")
+
+        self.assertIn("PAGEREF _Toc", document_xml)
+        self.assertIn("_Toc", document_xml)
+
     def test_build_report_inserts_toc_page_before_body_when_no_placeholder_exists(
         self,
     ) -> None:
@@ -333,7 +418,12 @@ class WordFieldTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         redacted = docx.Document(project_root / "out" / "redacted.docx")
 
-        toc_index = next(
+        toc_title_index = next(
+            index
+            for index, paragraph in enumerate(redacted.paragraphs)
+            if paragraph.text.strip() == "目录"
+        )
+        toc_field_index = next(
             index
             for index, paragraph in enumerate(redacted.paragraphs)
             if " TOC " in paragraph._p.xml
@@ -344,9 +434,15 @@ class WordFieldTests(unittest.TestCase):
             if paragraph.style.name in {"标题2", "Heading 1"}
         )
 
-        self.assertLess(toc_index, body_heading_index)
-        self.assertIn("w:type=\"page\"", redacted.paragraphs[toc_index - 1]._p.xml)
-        self.assertIn("w:type=\"page\"", redacted.paragraphs[toc_index + 1]._p.xml)
+        self.assertLess(toc_title_index, toc_field_index)
+        self.assertLess(toc_field_index, body_heading_index)
+        self.assertIn("w:type=\"page\"", redacted.paragraphs[toc_title_index - 1]._p.xml)
+        self.assertTrue(
+            any(
+                'w:type="page"' in paragraph._p.xml
+                for paragraph in redacted.paragraphs[toc_field_index + 1 : body_heading_index]
+            )
+        )
 
     def test_build_report_inserts_toc_page_when_enabled_without_detection(
         self,
@@ -427,22 +523,31 @@ class WordFieldTests(unittest.TestCase):
 
     def test_default_repo_toc_formatting_matches_policy(self) -> None:
         project_root = self.create_project()
-        self.insert_toc_placeholder(project_root)
+        self.write_report_body(
+            project_root,
+            "## 一级\n\n### 二级\n\n#### 三级\n\n正文。\n",
+        )
         self.set_toc_confirmation(project_root, enabled=True, needs_confirmation=False)
 
         result = self.run_completed(project_root, "build_report.py")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
         redacted = docx.Document(project_root / "out" / "redacted.docx")
 
         for style_name in ("目录1", "目录2", "目录3"):
-            style = redacted.styles[style_name]
-            self.assertEqual(style.font.name, "宋体")
-            self.assertIsNotNone(style.font.size)
-            self.assertEqual(style.font.size.pt, 14.0)
-            self.assertEqual(style.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
-            self.assertEqual(style.paragraph_format.line_spacing, 1.5)
-            self.assertIsNone(style.paragraph_format.left_indent)
-            self.assertIsNone(style.paragraph_format.first_line_indent)
+            self.assert_toc_style_matches_policy(redacted.styles[style_name])
+
+        if not payload["toc_refresh"]["updated"]:
+            self.skipTest("Word automation unavailable, cannot validate built-in TOC styles")
+
+        toc_entry_styles = {
+            paragraph.style.style_id: paragraph.style
+            for paragraph in redacted.paragraphs
+            if getattr(paragraph.style, "style_id", "") in {"TOC1", "TOC2", "TOC3"}
+        }
+        self.assertTrue(toc_entry_styles)
+        for style in toc_entry_styles.values():
+            self.assert_toc_style_matches_policy(style)
 
     def test_postprocess_cross_reference_replaces_figure_placeholder_with_clickable_label(
         self,

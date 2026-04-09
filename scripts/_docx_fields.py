@@ -57,10 +57,12 @@ def append_complex_field(
     paragraph._p.append(end_run)
 
 
-def insert_toc_field(paragraph, levels: tuple[int, int]) -> None:
+def insert_toc_field(
+    paragraph, levels: tuple[int, int], display_text: str | None = "目录"
+) -> None:
     start_level, end_level = levels
     instruction = f' TOC \\o "{start_level}-{end_level}" \\h \\z \\u '
-    append_complex_field(paragraph, instruction, display_text="目录")
+    append_complex_field(paragraph, instruction, display_text=display_text)
 
 
 def append_reference_field(

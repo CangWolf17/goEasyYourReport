@@ -323,7 +323,9 @@ def format_reference_entry_paragraph(
     paragraph.paragraph_format.left_indent = Pt(0)
     paragraph.paragraph_format.first_line_indent = Pt(0)
     paragraph.paragraph_format.line_spacing = 1.5
-    apply_paragraph_font_settings(paragraph, body_font)
+    reference_font = dict(body_font or {})
+    reference_font["size"] = "21"
+    apply_paragraph_font_settings(paragraph, reference_font)
 
 
 def table_cell_font_settings() -> dict[str, str]:

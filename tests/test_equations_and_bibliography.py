@@ -261,7 +261,7 @@ class BibliographyStrategyTests(ProjectHarness):
         self.assertEqual(paragraph.style.name, "参考文献")
         self.assertEqual(paragraph.paragraph_format.left_indent.pt, 0.0)
         self.assertEqual(paragraph.paragraph_format.first_line_indent.pt, 0.0)
-        self.assertEqual(paragraph.runs[0].font.size.pt, 14.0)
+        self.assertEqual(paragraph.runs[0].font.size.pt, 10.5)
 
     def test_reference_section_list_entries_reset_to_flush_left_format(self) -> None:
         project_root = self.create_project()
