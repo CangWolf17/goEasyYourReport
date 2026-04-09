@@ -3,6 +3,7 @@
 ## Defaults
 - 语言：中文
 - 语言偏好：zh-CN
+- 参考文献来源：needs_confirmation (agent_generate_verified_only | agent_search_and_screen | user_supplied_files)
 - 工作模式：半自动
 - 模板冲突时：优先保留模板结构
 - 字段绑定不确定时：必须先确认

@@ -113,6 +113,15 @@ def build_issue_list(build_payload: dict[str, Any]) -> list[dict[str, object]]:
                 "agent_action": "decide_with_user_before_private_output",
             }
         )
+    for item in build_payload.get("equations", {}).get("unsupported", []):
+        issues.append(
+            {
+                "kind": "unsupported_equation_syntax",
+                "severity": item.get("severity", "handoff"),
+                "latex": item.get("latex"),
+                "agent_action": "decide_with_user_before_private_output",
+            }
+        )
     return issues
 
 
@@ -160,6 +169,9 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
 
     preview_path = project_path(project_root, "out/preview.docx")
     summary_path = project_path(project_root, "out/preview.summary.json")
+    summary_payload = load_json(summary_path) if summary_path.exists() else {}
+    review = summary_payload.get("review", {})
+    warnings = review.get("needs_confirmation", []) if isinstance(review, dict) else []
     payload = response(
         "prepare",
         "ok",
@@ -170,6 +182,7 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
             "preview_summary": repo_relative(project_root, summary_path),
             "private_fields": fields_result["json"],
         },
+        warnings=warnings,
         next_step="preview",
     )
     return 0, payload

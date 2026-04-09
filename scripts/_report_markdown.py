@@ -8,9 +8,14 @@ IMAGE_PATTERN = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)$")
 ORDERED_LIST_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<number>\d+)\.\s+(?P<text>.+)$")
 UNORDERED_LIST_PATTERN = re.compile(r"^(?P<indent>\s*)[-*]\s+(?P<text>.+)$")
 TABLE_SEPARATOR_PATTERN = re.compile(r"^:?-{3,}:?$")
-REFERENCE_PLACEHOLDER_PATTERN = re.compile(
+REFERENCE_PLACEHOLDER_PATTERN_TEXT = (
     r"\[\[REF:(?P<target_kind>figure|table|equation|bibliography):"
     r"(?P<target_id>[A-Za-z0-9_]+)(?:\|(?P<prefix>[^\]]*))?\]\]"
+)
+REFERENCE_PLACEHOLDER_PATTERN = re.compile(REFERENCE_PLACEHOLDER_PATTERN_TEXT)
+INLINE_EQUATION_PATTERN_TEXT = r"\$(?P<inline_latex>[^$\n]+)\$"
+INLINE_TOKEN_PATTERN = re.compile(
+    f"{REFERENCE_PLACEHOLDER_PATTERN_TEXT}|{INLINE_EQUATION_PATTERN_TEXT}"
 )
 
 
@@ -98,18 +103,26 @@ def cross_reference_placeholder_text(segment: dict[str, object]) -> str:
 def parse_paragraph_segments(text: str) -> list[dict[str, object]]:
     segments: list[dict[str, object]] = []
     cursor = 0
-    for match in REFERENCE_PLACEHOLDER_PATTERN.finditer(text):
+    for match in INLINE_TOKEN_PATTERN.finditer(text):
         if match.start() > cursor:
             segments.append({"kind": "text", "text": text[cursor : match.start()]})
-        prefix = match.group("prefix")
-        segment = {
-            "kind": "cross_reference",
-            "target_kind": match.group("target_kind"),
-            "target_id": match.group("target_id"),
-        }
-        if prefix is not None:
-            segment["prefix"] = prefix
-        segments.append(segment)
+        if match.group("inline_latex") is not None:
+            segments.append(
+                {
+                    "kind": "inline_equation",
+                    "latex": match.group("inline_latex"),
+                }
+            )
+        else:
+            prefix = match.group("prefix")
+            segment = {
+                "kind": "cross_reference",
+                "target_kind": match.group("target_kind"),
+                "target_id": match.group("target_id"),
+            }
+            if prefix is not None:
+                segment["prefix"] = prefix
+            segments.append(segment)
         cursor = match.end()
     if cursor < len(text):
         segments.append({"kind": "text", "text": text[cursor:]})
@@ -123,6 +136,7 @@ def markdown_to_blocks(path: Path) -> list[dict[str, object]]:
     code_lines: list[str] = []
     in_code_block = False
     code_language: str | None = None
+    equation_index = 0
 
     def flush_paragraph() -> None:
         nonlocal paragraph_lines
@@ -150,6 +164,11 @@ def markdown_to_blocks(path: Path) -> list[dict[str, object]]:
             code_lines = []
             code_language = None
 
+    def next_equation_id() -> str:
+        nonlocal equation_index
+        equation_index += 1
+        return f"eq_{equation_index:04d}"
+
     index = 0
     while index < len(lines):
         raw_line = lines[index]
@@ -171,6 +190,37 @@ def markdown_to_blocks(path: Path) -> list[dict[str, object]]:
             continue
         if not line or line == "---":
             flush_paragraph()
+            index += 1
+            continue
+        if line == "$$":
+            flush_paragraph()
+            equation_lines: list[str] = []
+            index += 1
+            while index < len(lines) and lines[index].strip() != "$$":
+                equation_lines.append(lines[index].rstrip())
+                index += 1
+            if index >= len(lines):
+                paragraph_lines.append("$$")
+                paragraph_lines.extend(equation_lines)
+                break
+            blocks.append(
+                {
+                    "kind": "equation",
+                    "latex": "\n".join(equation_lines).strip(),
+                    "id": next_equation_id(),
+                }
+            )
+            index += 1
+            continue
+        if line.startswith("$$") and line.endswith("$$") and len(line) > 4:
+            flush_paragraph()
+            blocks.append(
+                {
+                    "kind": "equation",
+                    "latex": line[2:-2].strip(),
+                    "id": next_equation_id(),
+                }
+            )
             index += 1
             continue
         table_block = parse_simple_table(lines, index)

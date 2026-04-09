@@ -151,6 +151,39 @@ def sync_user_profile_language(
     return content
 
 
+def sync_user_profile_bibliography_source(user_profile_text: str) -> str:
+    placeholder = (
+        "- 参考文献来源：needs_confirmation "
+        "(agent_generate_verified_only | agent_search_and_screen | user_supplied_files)"
+    )
+    lines = user_profile_text.splitlines()
+    preserved_trailing_newline = user_profile_text.endswith("\n")
+
+    for index, line in enumerate(lines):
+        if line.startswith("- 参考文献来源："):
+            lines[index] = placeholder
+            break
+    else:
+        insert_at = None
+        for index, line in enumerate(lines):
+            if line.strip() == "## Defaults":
+                insert_at = index + 1
+                while insert_at < len(lines) and lines[insert_at].startswith("- "):
+                    insert_at += 1
+                break
+        if insert_at is None:
+            lines.append("")
+            lines.append("## Defaults")
+            lines.append(placeholder)
+        else:
+            lines.insert(insert_at, placeholder)
+
+    content = "\n".join(lines)
+    if preserved_trailing_newline:
+        content += "\n"
+    return content
+
+
 def default_file_templates() -> dict[str, str]:
     workflow_text = (PROJECT_ROOT / "workflow.json").read_text(encoding="utf-8")
     user_profile_text = (PROJECT_ROOT / "user" / "user.md").read_text(
@@ -167,7 +200,9 @@ def default_file_templates() -> dict[str, str]:
         "config/code-theme.user.sample.json": (
             PROJECT_ROOT / "config" / "code-theme.user.sample.json"
         ).read_text(encoding="utf-8"),
-        "user/user.md": sync_user_profile_language(user_profile_text, workflow_text),
+        "user/user.md": sync_user_profile_bibliography_source(
+            sync_user_profile_language(user_profile_text, workflow_text)
+        ),
         "user/soul.md": (PROJECT_ROOT / "user" / "soul.md").read_text(encoding="utf-8"),
         "docs/report_body.md": (PROJECT_ROOT / "docs" / "report_body.md").read_text(
             encoding="utf-8"

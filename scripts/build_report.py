@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -9,13 +10,20 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts._bibliography import load_bibliography_entries, should_emit_bibliography
 from scripts._docx_integrity import validate_docx_package
 from scripts._docx_fields import (
+    add_bookmark,
     append_reference_field,
     enable_update_fields_on_open,
     insert_toc_field,
 )
-from scripts._docx_xml import clear_paragraph, create_word_element, word_qn
+from scripts._docx_xml import (
+    clear_paragraph,
+    create_word_element,
+    insert_paragraph_after,
+    word_qn,
+)
 from scripts._report_markdown import (
     cross_reference_placeholder_text,
     markdown_to_blocks,
@@ -134,6 +142,12 @@ def reference_label(target_kind: str, target_id: str) -> str:
     raise ValueError(f"Unsupported reference kind: {target_kind}")
 
 
+def strip_section_prefix(text: str) -> str:
+    normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", text.strip())
+    normalized = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", normalized)
+    return normalized.strip().lower()
+
+
 def build_reference_registry(doc) -> dict[str, dict[str, dict[str, str]]]:
     registry: dict[str, dict[str, dict[str, str]]] = {
         "figure": {},
@@ -170,8 +184,14 @@ def apply_cross_reference_pass(doc, plan: dict[str, object]) -> None:
     cross_references = semantics.get("cross_references", {})
     if not isinstance(cross_references, dict):
         return
-    if cross_references.get("figure_table_enabled") is not True:
-        return
+    bibliography = semantics.get("bibliography", {})
+    enabled_kinds = {
+        "figure": cross_references.get("figure_table_enabled") is True,
+        "table": cross_references.get("figure_table_enabled") is True,
+        "equation": bool(cross_references.get("equation_enabled", True)),
+        "bibliography": bool(cross_references.get("bibliography_enabled", True))
+        and bool(bibliography.get("output_block_present", False)),
+    }
 
     registry = build_reference_registry(doc)
     for paragraph in doc.paragraphs:
@@ -189,7 +209,7 @@ def apply_cross_reference_pass(doc, plan: dict[str, object]) -> None:
                 paragraph.add_run(str(segment.get("text", "")))
                 continue
             target_kind = str(segment.get("target_kind", ""))
-            if target_kind not in {"figure", "table"}:
+            if not enabled_kinds.get(target_kind, False):
                 paragraph.add_run(cross_reference_placeholder_text(segment))
                 continue
             target_id = str(segment.get("target_id", ""))
@@ -203,6 +223,48 @@ def apply_cross_reference_pass(doc, plan: dict[str, object]) -> None:
                 label_text=entry["label"],
                 prefix_text=str(segment.get("prefix", "") or ""),
             )
+
+
+def bibliography_style_name(doc) -> str | None:
+    available_styles = {
+        style.name for style in doc.styles if getattr(style, "name", None)
+    }
+    for candidate in ("参考文献", "正文", "Normal"):
+        if candidate in available_styles:
+            return candidate
+    return None
+
+
+def append_bibliography_output(
+    doc, plan: dict[str, object], project_root: Path | str
+) -> None:
+    if not should_emit_bibliography(plan):
+        return
+
+    entries = load_bibliography_entries(project_root, plan)
+    if not entries:
+        return
+
+    heading = next(
+        (
+            paragraph
+            for paragraph in doc.paragraphs
+            if strip_section_prefix(paragraph.text) in {"参考文献", "references"}
+        ),
+        None,
+    )
+    if heading is None:
+        return
+
+    style_name = bibliography_style_name(doc)
+    last = heading
+    for entry in entries:
+        paragraph = insert_paragraph_after(last)
+        if style_name:
+            paragraph.style = style_name
+        add_bookmark(paragraph, entry["bookmark"])
+        paragraph.add_run(entry["rendered_text"])
+        last = paragraph
 
 
 def main() -> int:
@@ -245,6 +307,7 @@ def main() -> int:
             "override_used": bool(code_theme.get("override_used", False)),
         },
     }
+    equation_status: dict[str, object] = {"unsupported": []}
     image_status = {"inserted": [], "failed": []}
     fillable = plan.get("regions", {}).get("fillable", [])
     if fillable:
@@ -256,8 +319,10 @@ def main() -> int:
             code_theme,
             code_status,
             plan.get("semantics"),
+            equation_status,
         )
     apply_toc_if_enabled(doc, plan)
+    append_bibliography_output(doc, plan, args.project_root)
     apply_cross_reference_pass(doc, plan)
     enable_update_fields_on_open(doc)
     doc.save(redacted_path)
@@ -266,6 +331,7 @@ def main() -> int:
         "redacted": str(redacted_path),
         "images": image_status,
         "code_blocks": code_status,
+        "equations": equation_status,
         "integrity": integrity_report,
     }
     if not integrity_report["ok"]:
@@ -274,7 +340,13 @@ def main() -> int:
     emit_json(
         payload
     )
-    return 1 if image_status["failed"] or code_status["unsupported"] else 0
+    return (
+        1
+        if image_status["failed"]
+        or code_status["unsupported"]
+        or equation_status["unsupported"]
+        else 0
+    )
 
 
 if __name__ == "__main__":

@@ -51,6 +51,7 @@ def build_summary(
         "present": bool(template_scan.get("reference_block_present", False))
     }
     cross_references = semantics.get("cross_references", {})
+    bibliography = semantics.get("bibliography", {})
 
     needs_confirmation = []
     if not plan.get("regions", {}).get("fillable", []):
@@ -71,6 +72,11 @@ def build_summary(
         needs_confirmation.append(
             "confirm whether to insert figure/table cross references"
         )
+    if (
+        bibliography.get("output_block_present")
+        and bibliography.get("source_mode") == "needs_confirmation"
+    ):
+        needs_confirmation.append("confirm bibliography source mode")
 
     return {
         "version": "1.0",
@@ -99,6 +105,14 @@ def build_summary(
                 "figure_table_enabled": cross_references.get(
                     "figure_table_enabled", "needs_confirmation"
                 )
+            },
+            "bibliography": {
+                "source_mode": bibliography.get(
+                    "source_mode", "needs_confirmation"
+                ),
+                "output_block_present": bool(
+                    bibliography.get("output_block_present", False)
+                ),
             },
         },
         "template_recommendation": template_recommendation or {},

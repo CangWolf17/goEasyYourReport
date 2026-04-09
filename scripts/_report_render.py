@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from scripts._docx_fields import add_bookmark, append_complex_field
+from scripts._equation_omml import UnsupportedEquationSyntax, latex_to_omml
 from scripts._report_markdown import cross_reference_placeholder_text
 from scripts._docx_semantics import (
     apply_default_table_rules,
@@ -14,6 +15,7 @@ from scripts._docx_semantics import (
 )
 from scripts._docx_xml import (
     clear_paragraph,
+    create_word_element,
     insert_paragraph_after,
     insert_paragraph_before,
     set_paragraph_pagination,
@@ -604,6 +606,58 @@ def apply_caption_field(
         paragraph.add_run(f" {label.strip()}")
 
 
+def equation_ordinal(block: dict[str, object]) -> int:
+    block_id = str(block.get("id", "eq_0001"))
+    return int(block_id.split("_", 1)[1])
+
+
+def record_unsupported_equation(
+    equation_status: dict[str, object] | None, latex: str
+) -> None:
+    if equation_status is None:
+        return
+    equation_status.setdefault("unsupported", []).append(
+        {
+            "kind": "unsupported_equation_syntax",
+            "severity": "handoff",
+            "latex": latex,
+        }
+    )
+
+
+def append_inline_equation(paragraph, latex: str, equation_status: dict[str, object] | None) -> None:
+    try:
+        paragraph._p.append(latex_to_omml(latex))
+    except UnsupportedEquationSyntax:
+        record_unsupported_equation(equation_status, latex)
+        paragraph.add_run(f"${latex}$")
+
+
+def apply_equation_block(
+    paragraph,
+    block: dict[str, object],
+    available_styles: set[str],
+    equation_status: dict[str, object] | None,
+) -> None:
+    clear_paragraph(paragraph)
+    apply_named_style(paragraph, body_style_name(available_styles))
+    paragraph.alignment = importlib.import_module(
+        "docx.enum.text"
+    ).WD_ALIGN_PARAGRAPH.CENTER
+    set_paragraph_pagination(paragraph, keep_lines=True)
+    bookmark_name = str(block.get("id", "eq_0001"))
+    add_bookmark(paragraph, bookmark_name)
+    latex = str(block.get("latex", "")).strip()
+    try:
+        o_math_para = create_word_element("m:oMathPara")
+        o_math_para.append(latex_to_omml(latex))
+        paragraph._p.append(o_math_para)
+        paragraph.add_run(f"({equation_ordinal(block)})")
+    except UnsupportedEquationSyntax:
+        record_unsupported_equation(equation_status, latex)
+        paragraph.add_run(f"$${latex}$$")
+
+
 def caption_label_from_heading(text: str) -> str:
     stripped = text.strip()
     normalized = SECTION_NUMBER_PREFIX_RE.sub("", stripped, count=1).strip()
@@ -669,6 +723,7 @@ def apply_block(
     available_styles: set[str],
     *,
     forced_style: str | None = None,
+    equation_status: dict[str, object] | None = None,
 ) -> None:
     clear_paragraph(paragraph)
     body_font = style_font_settings(
@@ -705,9 +760,18 @@ def apply_block(
         for segment in segments:
             if segment.get("kind") == "cross_reference":
                 paragraph.add_run(cross_reference_placeholder_text(segment))
+            elif segment.get("kind") == "inline_equation":
+                append_inline_equation(
+                    paragraph,
+                    str(segment.get("latex", "")),
+                    equation_status,
+                )
             else:
                 paragraph.add_run(str(segment.get("text", "")))
         apply_paragraph_font_settings(paragraph, body_font)
+        return
+    if kind == "equation":
+        apply_equation_block(paragraph, block, available_styles, equation_status)
         return
     run = paragraph.add_run(text)
     if kind == "list_item":
@@ -724,6 +788,7 @@ def render_blocks(
     code_theme: dict[str, object],
     code_status: dict[str, object],
     semantics: dict[str, object] | None = None,
+    equation_status: dict[str, object] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     start_raw = region.get("start_paragraph")
     end_raw = region.get("end_paragraph")
@@ -829,6 +894,16 @@ def render_blocks(
                     label=str(first_block.get("alt", "")).strip(),
                 )
                 used_last = caption
+        elif first_kind == "equation":
+            apply_block(
+                current,
+                first_block,
+                available_styles,
+                forced_style=first_forced_style
+                or paragraph_style_for_block(first_block),
+                equation_status=equation_status,
+            )
+            used_last = current
         else:
             apply_block(
                 current,
@@ -836,6 +911,7 @@ def render_blocks(
                 available_styles,
                 forced_style=first_forced_style
                 or paragraph_style_for_block(first_block),
+                equation_status=equation_status,
             )
             used_last = current
         if first_kind == "heading":
@@ -899,6 +975,15 @@ def render_blocks(
                     label=str(block.get("alt", "")).strip(),
                 )
                 used_last = caption
+        elif block.get("kind") == "equation":
+            used_last = insert_paragraph_after(used_last)
+            apply_block(
+                used_last,
+                block,
+                available_styles,
+                forced_style=forced_style or paragraph_style_for_block(block),
+                equation_status=equation_status,
+            )
         else:
             used_last = insert_paragraph_after(used_last)
             apply_block(
@@ -906,6 +991,7 @@ def render_blocks(
                 block,
                 available_styles,
                 forced_style=forced_style or paragraph_style_for_block(block),
+                equation_status=equation_status,
             )
             if block.get("kind") == "heading":
                 last_heading_text = str(block.get("text", "")).strip()

@@ -68,6 +68,26 @@ class ConfirmationPackageTests(unittest.TestCase):
             self.assertIn("figure / table cross-references are a post-processing step", text)
             self.assertIn("cross-reference insertion requires user confirmation", text)
 
+    def test_repo_docs_describe_equation_and_bibliography_workflow(self) -> None:
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text, readme_text):
+            self.assertIn("supported equation syntax", text)
+            self.assertIn(
+                "inline equations render inline, block equations are numbered and cross-referenceable",
+                text,
+            )
+            self.assertIn(
+                "bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files",
+                text,
+            )
+            self.assertIn(
+                "no reference block in task/template means source-only, not output",
+                text,
+            )
+
     def test_init_project_copies_code_theme_sample(self) -> None:
         project_root = self.create_project()
 
@@ -240,7 +260,6 @@ class ConfirmationPackageTests(unittest.TestCase):
         self.assert_normalized_agent_payload(payload, "prepare")
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["issues"], [])
-        self.assertEqual(payload["warnings"], [])
         self.assertTrue(payload["summary"])
         self.assertTrue(payload["artifacts"])
         self.assertTrue(payload["next_step"])

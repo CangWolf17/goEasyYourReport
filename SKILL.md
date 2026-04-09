@@ -61,6 +61,10 @@ Return codes:
 - TOC is inserted only when detected and confirmed; if template scan finds a TOC signal and confirmation is unresolved, stop at preview/build and review `out/preview.summary.json`.
 - figure / table cross-references are a post-processing step over explicit `[[REF:figure:...]]` and `[[REF:table:...]]` placeholders, not a first-pass inline text rewrite.
 - cross-reference insertion requires user confirmation before build; do not silently enable figure/table reference insertion on behalf of the user.
+- supported equation syntax in v1 is the in-repo subset: letters, digits, parentheses, `+ - * / =`, superscripts, subscripts, `\frac{...}{...}`, `\sqrt{...}`, and common Greek letters such as `\alpha`.
+- inline equations render inline, block equations are numbered and cross-referenceable.
+- bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files.
+- no reference block in task/template means source-only, not output.
 
 ## Code Rendering Contract
 - Supported fenced code languages are `python`, `json`, `bash`, `yaml`, `sql`, `javascript`, `typescript`, `c`, `cpp`, and `java`.

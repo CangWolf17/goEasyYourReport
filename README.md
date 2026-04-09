@@ -73,6 +73,10 @@ uv run python scripts\workflow_agent.py inject --project-root . --source temp\pr
 - TOC is inserted only when detected and confirmed. If template scan finds a TOC placeholder or field and confirmation is unresolved, review `out/preview.summary.json` before running through build.
 - figure / table cross-references are a post-processing step driven by explicit placeholders such as `[[REF:figure:fig_0001]]`, `[[REF:figure:fig_0001|见下图]]`, `[[REF:table:tbl_0001]]`, and `[[REF:table:tbl_0001|见上表]]`.
 - cross-reference insertion requires user confirmation; the repo will not silently turn on figure/table reference replacement just because placeholders are present.
+- supported equation syntax in v1 is limited to letters, digits, parentheses, `+ - * / =`, superscripts, subscripts, `\frac{...}{...}`, `\sqrt{...}`, and common Greek letters such as `\alpha`.
+- inline equations render inline, block equations are numbered and cross-referenceable.
+- bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files.
+- no reference block in task/template means source-only, not output.
 - Repo defaults apply only when the task book and the selected template do not already specify the semantic style choice.
 - Unsupported fenced code languages still render as styled fallback blocks, but they are reported as `kind=unsupported_code_language` and require handoff before private injection.
 - Image insertion failures are surfaced as `kind=image_insert_failed` and also require handoff before private injection.
