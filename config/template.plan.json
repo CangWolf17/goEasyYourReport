@@ -17,15 +17,15 @@
         "id": "cover",
         "reason": "template-scan",
         "start_paragraph": 0,
-        "end_paragraph": 4
+        "end_paragraph": 3
       }
     ],
     "fillable": [
       {
         "id": "body_main",
         "source": "./docs/report_body.md",
-        "start_paragraph": 5,
-        "end_paragraph": 10
+        "start_paragraph": 4,
+        "end_paragraph": 8
       }
     ]
   },
@@ -35,47 +35,47 @@
     "headings": [
       {
         "kind": "heading",
+        "paragraph": 4,
+        "style": "标题2",
+        "text": "一、正文内容"
+      },
+      {
+        "kind": "heading",
         "paragraph": 5,
-        "style": "Heading 1",
-        "text": "1 Overview"
+        "style": "标题3",
+        "text": "1.1 小节示例"
       },
       {
         "kind": "heading",
         "paragraph": 7,
-        "style": "Heading 1",
-        "text": "2 Details"
-      },
-      {
-        "kind": "heading",
-        "paragraph": 9,
-        "style": "Heading 1",
-        "text": "3 References"
+        "style": "标题2",
+        "text": "二、参考文献"
       }
     ],
     "field_candidates": [
       {
         "kind": "field_candidate",
         "paragraph": 1,
-        "style": "Normal",
+        "style": "正文",
         "text": "姓 名："
       },
       {
         "kind": "field_candidate",
         "paragraph": 2,
-        "style": "Normal",
+        "style": "正文",
         "text": "学 号："
       },
       {
         "kind": "field_candidate",
         "paragraph": 3,
-        "style": "Normal",
+        "style": "正文",
         "text": "完成日期："
       }
     ],
     "region_candidates": [
       {
         "kind": "boundary",
-        "paragraph": 5,
+        "paragraph": 4,
         "reason": "first-heading-like-paragraph",
         "locked_before": "cover",
         "fillable_after": "body_main"

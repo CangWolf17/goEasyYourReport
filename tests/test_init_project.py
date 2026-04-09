@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 import docx
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +72,81 @@ class InitProjectTests(unittest.TestCase):
             script_names = [item["script"] for item in init_report["script_results"]]
             self.assertIn("scan_template.py", script_names)
             self.assertIn("build_preview.py", script_names)
+
+    def test_init_project_uses_sanitized_default_template(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            template_doc = docx.Document(
+                project_root / "templates" / "template.user.docx"
+            )
+            visible = [
+                paragraph.text.strip()
+                for paragraph in template_doc.paragraphs
+                if paragraph.text.strip()
+            ]
+
+            self.assertIn("报告题目 / Report Title", visible)
+            self.assertIn("姓 名：", visible)
+            self.assertIn("学 号：", visible)
+            self.assertIn("完成日期：", visible)
+
+    def test_init_project_force_refreshes_default_template_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            first_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first_result.returncode, 0, msg=first_result.stderr)
+
+            for relative in (
+                "templates/template.sample.docx",
+                "templates/template.user.docx",
+            ):
+                stale_doc = docx.Document()
+                stale_doc.add_paragraph("stale template")
+                stale_doc.save(project_root / relative)
+
+            refresh_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--force",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(refresh_result.returncode, 0, msg=refresh_result.stderr)
+
+            refreshed_doc = docx.Document(
+                project_root / "templates" / "template.user.docx"
+            )
+            visible = [
+                paragraph.text.strip()
+                for paragraph in refreshed_doc.paragraphs
+                if paragraph.text.strip()
+            ]
+            self.assertIn("报告题目 / Report Title", visible)
 
     def test_private_field_injection_builds_private_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -169,6 +246,50 @@ class InitProjectTests(unittest.TestCase):
             self.assertIn("First paragraph.", texts)
             self.assertIn("Details", texts)
             self.assertIn("Second paragraph.", texts)
+
+    def test_build_report_prefers_template_native_body_styles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n正文段落示例。",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered = {
+                paragraph.text.strip(): paragraph.style.name
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+            }
+
+            self.assertEqual(rendered["一级标题"], "标题2")
+            self.assertEqual(rendered["二级标题"], "标题3")
+            self.assertEqual(rendered["三级标题"], "标题4")
+            self.assertEqual(rendered["正文段落示例。"], "正文")
 
     def test_build_report_renders_fenced_code_block_as_single_cell_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -737,7 +858,261 @@ class InitProjectTests(unittest.TestCase):
             )
 
             redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
-            self.assertEqual(len(redacted_doc.inline_shapes), 1)
+            self.assertTrue(
+                any(
+                    "<w:drawing" in paragraph._p.xml
+                    for paragraph in redacted_doc.paragraphs
+                )
+            )
+
+    def test_build_report_renders_centered_figure_with_caption_below(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            image_path = project_root / "docs" / "images" / "arch.png"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(TEST_PNG_BYTES)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Figures\n\n![Architecture](images/arch.png)\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            image_indexes = [
+                index
+                for index, paragraph in enumerate(redacted_doc.paragraphs)
+                if "<w:drawing" in paragraph._p.xml
+            ]
+            self.assertEqual(len(image_indexes), 1)
+
+            image_paragraph = redacted_doc.paragraphs[image_indexes[0]]
+            self.assertEqual(image_paragraph.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertIn("wrapTopAndBottom", image_paragraph._p.xml)
+
+            caption_paragraph = redacted_doc.paragraphs[image_indexes[0] + 1]
+            self.assertEqual(caption_paragraph.style.name, "图题")
+            self.assertTrue(caption_paragraph.text.strip().startswith("图1"))
+
+    def test_build_report_renders_centered_table_with_caption_and_cell_formatting(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Metrics\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            self.assertEqual(len(redacted_doc.tables), 1)
+            table = redacted_doc.tables[0]
+            self.assertEqual(table.alignment, WD_TABLE_ALIGNMENT.CENTER)
+
+            caption_element = table._tbl.getprevious()
+            self.assertIsNotNone(caption_element)
+            self.assertIn("表1", caption_element.xpath("string()"))
+
+            caption_texts = [
+                (paragraph.text.strip(), paragraph.style.name)
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+            ]
+            self.assertIn(("表1 Metrics", "表题"), caption_texts)
+
+            cell_paragraph = table.cell(0, 0).paragraphs[0]
+            self.assertIsNotNone(cell_paragraph.paragraph_format.first_line_indent)
+            self.assertEqual(cell_paragraph.paragraph_format.first_line_indent.pt, 0.0)
+            self.assertEqual(cell_paragraph.paragraph_format.line_spacing, 1.5)
+
+    def test_build_report_applies_reference_style_in_reference_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## 参考文献\n\n[1] 作者. 题名[J]. 期刊名, 2024, 1(1): 1-10.\n\n[2] 作者. 书名[M]. 北京: 出版社, 2023.\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered = {
+                paragraph.text.strip(): paragraph.style.name
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip().startswith("[")
+            }
+
+            self.assertEqual(
+                rendered["[1] 作者. 题名[J]. 期刊名, 2024, 1(1): 1-10."],
+                "参考文献",
+            )
+            self.assertEqual(
+                rendered["[2] 作者. 书名[M]. 北京: 出版社, 2023."],
+                "参考文献",
+            )
+
+    def test_build_report_applies_reference_style_in_numbered_reference_section(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## 二、参考文献\n\n[1] 作者. 题名[J]. 期刊名, 2024, 1(1): 1-10.\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered = {
+                paragraph.text.strip(): paragraph.style.name
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip().startswith("[")
+            }
+            self.assertEqual(
+                rendered["[1] 作者. 题名[J]. 期刊名, 2024, 1(1): 1-10."],
+                "参考文献",
+            )
+
+    def test_build_report_applies_reference_style_to_numbered_reference_entries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## 参考文献\n\n1. Author. Title[J]. Journal, 2024, 1(1): 1-10.\n2. Author. Book[M]. Beijing: Press, 2023.\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered = {
+                paragraph.text.strip(): paragraph.style.name
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip().startswith(("Author. Title", "Author. Book"))
+            }
+            self.assertEqual(
+                rendered["Author. Title[J]. Journal, 2024, 1(1): 1-10."],
+                "参考文献",
+            )
+            self.assertEqual(
+                rendered["Author. Book[M]. Beijing: Press, 2023."],
+                "参考文献",
+            )
 
     def test_build_report_reports_failed_image_insertions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

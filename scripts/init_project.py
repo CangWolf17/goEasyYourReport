@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from scripts._shared import (
     emit_json,
     ensure_text_file,
     import_docx,
+    run_python_script,
 )
 
 
@@ -34,9 +34,23 @@ DEFAULT_DIRS = [
 ]
 
 
-def ensure_sample_template(path: Path, *, reference: bool = False) -> bool:
-    if path.exists():
+def ensure_sample_template(
+    path: Path, *, reference: bool = False, overwrite: bool = False
+) -> bool:
+    if path.exists() and not overwrite:
         return False
+
+    default_asset = (
+        PROJECT_ROOT
+        / "templates"
+        / ("reference.sample.docx" if reference else "template.sample.docx")
+    )
+    if default_asset.exists():
+        if path.exists() and path.resolve() == default_asset.resolve():
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(default_asset, path)
+        return True
 
     docx = import_docx()
     text_module = __import__("docx.enum.text", fromlist=["WD_ALIGN_PARAGRAPH"])
@@ -72,8 +86,8 @@ def ensure_sample_template(path: Path, *, reference: bool = False) -> bool:
     return True
 
 
-def copy_if_missing(src: Path | None, dst: Path) -> bool:
-    if src is None or not src.exists() or dst.exists():
+def copy_if_missing(src: Path | None, dst: Path, *, overwrite: bool = False) -> bool:
+    if src is None or not src.exists() or (dst.exists() and not overwrite):
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
@@ -120,20 +134,13 @@ def run_optional(script_name: str, project_root: Path) -> dict[str, object]:
     script = project_root / "scripts" / script_name
     if not script.exists():
         return {"script": script_name, "status": "skipped"}
-    result = subprocess.run(
-        [sys.executable, str(script), "--project-root", str(project_root)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-    )
+    result = run_python_script(script, "--project-root", str(project_root))
     return {
         "script": script_name,
-        "status": "ok" if result.returncode == 0 else "error",
-        "returncode": result.returncode,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
+        "status": "ok" if result["returncode"] == 0 else "error",
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
     }
 
 
@@ -170,18 +177,20 @@ def main() -> int:
     reference_sample = root / "templates" / "reference.sample.docx"
 
     copied_templates = []
-    if ensure_sample_template(template_sample):
+    if ensure_sample_template(template_sample, overwrite=args.force):
         copied_templates.append(str(template_sample))
-    if ensure_sample_template(reference_sample, reference=True):
+    if ensure_sample_template(reference_sample, reference=True, overwrite=args.force):
         copied_templates.append(str(reference_sample))
     if copy_if_missing(
         Path(args.sample_template).resolve() if args.sample_template else None,
         template_sample,
+        overwrite=args.force,
     ):
         copied_templates.append(str(template_sample))
     if copy_if_missing(
         Path(args.sample_reference).resolve() if args.sample_reference else None,
         reference_sample,
+        overwrite=args.force,
     ):
         copied_templates.append(str(reference_sample))
     if copy_if_missing(
@@ -191,6 +200,7 @@ def main() -> int:
         if template_sample.exists()
         else None,
         template_user,
+        overwrite=args.force,
     ):
         copied_templates.append(str(template_user))
     if copy_if_missing(
@@ -200,6 +210,7 @@ def main() -> int:
         if reference_sample.exists()
         else None,
         reference_user,
+        overwrite=args.force,
     ):
         copied_templates.append(str(reference_user))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib
 import json
 import re
@@ -50,10 +51,56 @@ BUILTIN_CODE_THEMES = {
     }
 }
 
+REFERENCE_SECTION_TITLES = {"参考文献", "references"}
+
 
 def clear_paragraph(paragraph) -> None:
     for child in list(paragraph._element):
         paragraph._element.remove(child)
+
+
+def preferred_style_name(available_styles: set[str], *candidates: str) -> str | None:
+    for candidate in candidates:
+        if candidate in available_styles:
+            return candidate
+    return None
+
+
+def preferred_heading_style(level: int, available_styles: set[str]) -> str | None:
+    level = max(1, min(level, 4))
+    style_map = {
+        1: ("标题2", "Heading 1"),
+        2: ("标题3", "Heading 2"),
+        3: ("标题4", "Heading 3"),
+        4: ("标题4", "Heading 4"),
+    }
+    return preferred_style_name(available_styles, *style_map[level])
+
+
+def body_style_name(available_styles: set[str]) -> str | None:
+    return preferred_style_name(available_styles, "正文", "Normal")
+
+
+def figure_caption_style_name(available_styles: set[str]) -> str | None:
+    return preferred_style_name(available_styles, "图题", "Caption")
+
+
+def table_caption_style_name(available_styles: set[str]) -> str | None:
+    return preferred_style_name(available_styles, "表题", "Caption")
+
+
+def reference_style_name(available_styles: set[str]) -> str | None:
+    return preferred_style_name(available_styles, "参考文献", "正文", "Normal")
+
+
+def apply_named_style(paragraph, style_name: str | None) -> None:
+    if style_name:
+        paragraph.style = style_name
+
+
+def is_reference_section_title(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(token in lowered for token in REFERENCE_SECTION_TITLES)
 
 
 def normalize_hex_color(value: str) -> str:
@@ -136,6 +183,19 @@ def insert_paragraph_after(block):
     return paragraph_module.Paragraph(new_p, parent)
 
 
+def insert_paragraph_before(block):
+    paragraph_module = importlib.import_module("docx.text.paragraph")
+    xml_module = importlib.import_module("docx.oxml")
+    new_p = xml_module.OxmlElement("w:p")
+    if hasattr(block, "_p"):
+        block._p.addprevious(new_p)
+        parent = block._parent
+    else:
+        block._tbl.addprevious(new_p)
+        parent = block._parent
+    return paragraph_module.Paragraph(new_p, parent)
+
+
 def content_width(doc):
     section = doc.sections[0]
     return section.page_width - section.left_margin - section.right_margin
@@ -179,6 +239,84 @@ def set_cell_border(cell, color: str) -> None:
         element.set(ns_module.qn("w:val"), "single")
         element.set(ns_module.qn("w:sz"), "4")
         element.set(ns_module.qn("w:color"), normalize_hex_color(color))
+
+
+def format_table_cell_paragraph(paragraph) -> None:
+    shared_module = importlib.import_module("docx.shared")
+    Pt = shared_module.Pt
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.5
+
+
+def convert_inline_picture_to_top_bottom_anchor(run) -> None:
+    xml_module = importlib.import_module("docx.oxml")
+    ns_module = importlib.import_module("docx.oxml.ns")
+    drawing = run._r.find(ns_module.qn("w:drawing"))
+    if drawing is None:
+        return
+    inline = drawing.find(ns_module.qn("wp:inline"))
+    if inline is None:
+        return
+
+    anchor = xml_module.OxmlElement("wp:anchor")
+    for key, value in {
+        "distT": "0",
+        "distB": "0",
+        "distL": "0",
+        "distR": "0",
+        "simplePos": "0",
+        "relativeHeight": "251659264",
+        "behindDoc": "0",
+        "locked": "0",
+        "layoutInCell": "1",
+        "allowOverlap": "1",
+    }.items():
+        anchor.set(key, value)
+
+    simple_pos = xml_module.OxmlElement("wp:simplePos")
+    simple_pos.set(ns_module.qn("wp:x"), "0")
+    simple_pos.set(ns_module.qn("wp:y"), "0")
+
+    position_h = xml_module.OxmlElement("wp:positionH")
+    position_h.set(ns_module.qn("wp:relativeFrom"), "margin")
+    align_h = xml_module.OxmlElement("wp:align")
+    align_h.text = "center"
+    position_h.append(align_h)
+
+    position_v = xml_module.OxmlElement("wp:positionV")
+    position_v.set(ns_module.qn("wp:relativeFrom"), "paragraph")
+    pos_offset = xml_module.OxmlElement("wp:posOffset")
+    pos_offset.text = "0"
+    position_v.append(pos_offset)
+
+    wrap = xml_module.OxmlElement("wp:wrapTopAndBottom")
+
+    anchor.append(simple_pos)
+    anchor.append(position_h)
+    anchor.append(position_v)
+
+    for child_name in (
+        "wp:extent",
+        "wp:effectExtent",
+        "wp:docPr",
+        "wp:cNvGraphicFramePr",
+        "a:graphic",
+    ):
+        child = inline.find(ns_module.qn(child_name))
+        if child is not None:
+            if child_name == "wp:effectExtent":
+                anchor.append(deepcopy(child))
+            elif child_name == "wp:docPr":
+                anchor.append(wrap)
+                anchor.append(deepcopy(child))
+            else:
+                anchor.append(deepcopy(child))
+
+    if wrap.getparent() is None:
+        anchor.insert(4, wrap)
+
+    drawing.remove(inline)
+    drawing.append(anchor)
 
 
 def style_code_run(run, color: str) -> None:
@@ -334,15 +472,33 @@ def insert_markdown_table_after(block, rows: list[list[str]], width):
     table = parent.add_table(rows=len(rows), cols=column_count, width=width)
     anchor.addnext(table._tbl)
 
+    table_module = importlib.import_module("docx.enum.table")
+    table.alignment = table_module.WD_TABLE_ALIGNMENT.CENTER
+    style_names = {
+        style.name
+        for style in parent.part.document.styles
+        if getattr(style, "name", None)
+    }
+    table_style = preferred_style_name(style_names, "Table Grid", "Normal Table")
+    if table_style is not None:
+        table.style = table_style
+
     for row_index, row_values in enumerate(rows):
         for col_index, value in enumerate(row_values):
             cell = table.cell(row_index, col_index)
             cell.text = value
+            for paragraph in cell.paragraphs:
+                format_table_cell_paragraph(paragraph)
             if row_index == 0:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.bold = True
     return table
+
+
+def make_caption(prefix: str, index: int, label: str | None = None) -> str:
+    suffix = f" {label.strip()}" if label and label.strip() else ""
+    return f"{prefix}{index}{suffix}"
 
 
 def apply_image_block(
@@ -369,31 +525,41 @@ def apply_image_block(
             paragraph.style = "Caption"
         paragraph.add_run(f"[Image Insert Failed] {alt} ({raw_path}): file not found")
         image_status["failed"].append({**details, "reason": "file not found"})
-        return paragraph
+        return paragraph, False
 
     try:
-        paragraph.add_run().add_picture(str(resolved_path), width=width)
+        paragraph.alignment = importlib.import_module(
+            "docx.enum.text"
+        ).WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run()
+        run.add_picture(str(resolved_path), width=width)
+        convert_inline_picture_to_top_bottom_anchor(run)
         image_status["inserted"].append(details)
     except Exception as exc:
         if "Caption" in available_styles:
             paragraph.style = "Caption"
         paragraph.add_run(f"[Image Insert Failed] {alt} ({raw_path}): {exc}")
         image_status["failed"].append({**details, "reason": str(exc)})
-    return paragraph
+        return paragraph, False
+    return paragraph, True
 
 
 def apply_block(
-    paragraph, block: dict[str, object], available_styles: set[str]
+    paragraph,
+    block: dict[str, object],
+    available_styles: set[str],
+    *,
+    forced_style: str | None = None,
 ) -> None:
     clear_paragraph(paragraph)
     text = str(block.get("text", ""))
     kind = block.get("kind")
-    if kind == "heading":
+    if forced_style is not None:
+        apply_named_style(paragraph, forced_style)
+    elif kind == "heading":
         level_raw = block.get("level", 1)
         level = int(level_raw) if isinstance(level_raw, (int, str)) else 1
-        style_name = f"Heading {level}"
-        if style_name in available_styles:
-            paragraph.style = style_name
+        apply_named_style(paragraph, preferred_heading_style(level, available_styles))
     elif kind == "list_item":
         ordered = bool(block.get("ordered"))
         depth = int(block.get("depth", 0))
@@ -403,6 +569,8 @@ def apply_block(
             paragraph.style = style_name
         elif "List Paragraph" in available_styles:
             paragraph.style = "List Paragraph"
+    else:
+        apply_named_style(paragraph, body_style_name(available_styles))
     paragraph.add_run(text)
 
 
@@ -431,6 +599,18 @@ def render_blocks(
     }
     width = content_width(doc)
     image_status: dict[str, list[dict[str, str]]] = {"inserted": [], "failed": []}
+    figure_index = 0
+    table_index = 0
+    last_heading_text = ""
+    in_reference_section = False
+
+    def paragraph_style_for_block(block: dict[str, object]) -> str | None:
+        if in_reference_section and block.get("kind") in {"paragraph", "list_item"}:
+            return reference_style_name(available_styles)
+        if block.get("kind") == "paragraph":
+            return body_style_name(available_styles)
+        return None
+
     current = original_region[0]
     if blocks:
         first_kind = blocks[0].get("kind")
@@ -445,13 +625,23 @@ def render_blocks(
                 code_status,
             )
         elif first_kind == "table":
-            clear_paragraph(current)
             rows = blocks[0].get("rows", [])
             if not isinstance(rows, list):
                 rows = []
+            table_index += 1
+            apply_block(
+                current,
+                {
+                    "kind": "paragraph",
+                    "text": make_caption("表", table_index, last_heading_text),
+                },
+                available_styles,
+                forced_style=table_caption_style_name(available_styles),
+            )
             used_last = insert_markdown_table_after(current, rows, width)
         elif first_kind == "image":
-            used_last = apply_image_block(
+            figure_index += 1
+            image_paragraph, inserted = apply_image_block(
                 current,
                 blocks[0],
                 available_styles,
@@ -459,9 +649,32 @@ def render_blocks(
                 body_dir,
                 image_status,
             )
+            used_last = image_paragraph
+            if inserted:
+                caption = insert_paragraph_after(image_paragraph)
+                apply_block(
+                    caption,
+                    {
+                        "kind": "paragraph",
+                        "text": make_caption(
+                            "图", figure_index, str(blocks[0].get("alt", "")).strip()
+                        ),
+                    },
+                    available_styles,
+                    forced_style=figure_caption_style_name(available_styles),
+                )
+                used_last = caption
         else:
-            apply_block(current, blocks[0], available_styles)
+            apply_block(
+                current,
+                blocks[0],
+                available_styles,
+                forced_style=paragraph_style_for_block(blocks[0]),
+            )
             used_last = current
+        if first_kind == "heading":
+            last_heading_text = str(blocks[0].get("text", "")).strip()
+            in_reference_section = is_reference_section_title(last_heading_text)
     else:
         clear_paragraph(current)
         used_last = current
@@ -477,13 +690,25 @@ def render_blocks(
                 code_status,
             )
         elif block.get("kind") == "table":
+            table_index += 1
+            caption = insert_paragraph_after(used_last)
+            apply_block(
+                caption,
+                {
+                    "kind": "paragraph",
+                    "text": make_caption("表", table_index, last_heading_text),
+                },
+                available_styles,
+                forced_style=table_caption_style_name(available_styles),
+            )
             rows = block.get("rows", [])
             if not isinstance(rows, list):
                 rows = []
-            used_last = insert_markdown_table_after(used_last, rows, width)
+            used_last = insert_markdown_table_after(caption, rows, width)
         elif block.get("kind") == "image":
             used_last = insert_paragraph_after(used_last)
-            used_last = apply_image_block(
+            figure_index += 1
+            image_paragraph, inserted = apply_image_block(
                 used_last,
                 block,
                 available_styles,
@@ -491,9 +716,32 @@ def render_blocks(
                 body_dir,
                 image_status,
             )
+            used_last = image_paragraph
+            if inserted:
+                caption = insert_paragraph_after(image_paragraph)
+                apply_block(
+                    caption,
+                    {
+                        "kind": "paragraph",
+                        "text": make_caption(
+                            "图", figure_index, str(block.get("alt", "")).strip()
+                        ),
+                    },
+                    available_styles,
+                    forced_style=figure_caption_style_name(available_styles),
+                )
+                used_last = caption
         else:
             used_last = insert_paragraph_after(used_last)
-            apply_block(used_last, block, available_styles)
+            apply_block(
+                used_last,
+                block,
+                available_styles,
+                forced_style=paragraph_style_for_block(block),
+            )
+            if block.get("kind") == "heading":
+                last_heading_text = str(block.get("text", "")).strip()
+                in_reference_section = is_reference_section_title(last_heading_text)
 
     for paragraph in original_region[1:]:
         if paragraph._element.getparent() is not None:
