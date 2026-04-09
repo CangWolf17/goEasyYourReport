@@ -18,6 +18,7 @@ from scripts._shared import (
     import_docx,
     run_python_script,
 )
+from scripts._task_contract import default_task_contract, dump_task_contract
 
 
 DEFAULT_DIRS = [
@@ -33,6 +34,23 @@ DEFAULT_DIRS = [
     "logs",
     "temp",
 ]
+
+TASK_REQUIREMENTS_STUB = """# Task Requirements
+
+- 题目：
+- 问题要求：
+- 评分点：
+- 其他硬性约束：
+"""
+
+DOCUMENT_REQUIREMENTS_STUB = """# Document Requirements
+
+- 必需模块：
+- 版式 / 设计要求：
+- 是否需要目录：
+- 是否需要参考文献：
+- 其他结构要求：
+"""
 
 
 def ensure_sample_template(
@@ -207,6 +225,8 @@ def default_file_templates() -> dict[str, str]:
         "docs/report_body.md": (PROJECT_ROOT / "docs" / "report_body.md").read_text(
             encoding="utf-8"
         ),
+        "docs/task_requirements.md": TASK_REQUIREMENTS_STUB,
+        "docs/document_requirements.md": DOCUMENT_REQUIREMENTS_STUB,
     }
 
 
@@ -248,6 +268,11 @@ def main() -> int:
     for relative, content in default_file_templates().items():
         if ensure_text_file(root / relative, content, overwrite=args.force):
             created_files.append(str(root / relative))
+
+    task_contract_path = root / "report.task.yaml"
+    if args.force or not task_contract_path.exists():
+        dump_task_contract(task_contract_path, default_task_contract())
+        created_files.append(str(task_contract_path))
 
     created_files.extend(sync_script_skeleton(root, overwrite=args.force))
 
