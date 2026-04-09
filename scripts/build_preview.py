@@ -15,6 +15,7 @@ from scripts._docx_xml import (
 )
 from scripts._docx_semantics import ensure_plan_semantics
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
+from scripts._task_contract import load_task_contract
 
 
 def normalize_repo_relative(path_text: str) -> str:
@@ -29,6 +30,7 @@ def build_summary(
     binding: dict[str, object],
     summary_relative: str,
     preview_relative: str,
+    task_contract: dict[str, object],
     template_recommendation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     anchors = plan.get("anchors", {})
@@ -110,6 +112,11 @@ def build_summary(
         "template": plan["selection"]["primary_template"],
         "preview": preview_relative,
         "summary": summary_relative,
+        "task_contract": {
+            "stage": task_contract["task"]["stage"],
+            "ready_to_write": task_contract["task"]["ready_to_write"],
+            "next_step": task_contract["runtime"]["next_step"],
+        },
         "regions": plan.get("regions", {}),
         "anchors": anchors,
         "field_binding": {
@@ -178,6 +185,7 @@ def main() -> int:
         raise SystemExit(f"Field binding not found: {binding_path}")
 
     binding = load_json(binding_path)
+    task_contract = load_task_contract(project_path(args.project_root, "report.task.yaml"))
     recommendation_path = project_path(
         args.project_root, "logs/template_style_recommendation.json"
     )
@@ -228,6 +236,7 @@ def main() -> int:
         binding,
         summary_relative,
         preview_relative,
+        task_contract,
         template_recommendation,
     )
     dump_json(summary_path, summary)

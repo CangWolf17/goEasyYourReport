@@ -228,6 +228,23 @@ class ConfirmationPackageTests(unittest.TestCase):
         self.assertTrue(any("Locked Region" in text for text in texts))
         self.assertTrue(any("Fillable Region" in text for text in texts))
 
+    def test_preview_summary_surfaces_report_task_stage(self) -> None:
+        project_root = self.create_project()
+
+        result = self.run_workflow(project_root, "prepare")
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        summary = json.loads(
+            (project_root / "out" / "preview.summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertIn("task_contract", summary)
+        self.assertIn("ready_to_write", summary["task_contract"])
+        self.assertIn("stage", summary["task_contract"])
+        self.assertIn("next_step", summary["task_contract"])
+
     def test_verify_report_accepts_preview_mode(self) -> None:
         project_root = self.create_project()
         self.run_json(project_root, "build_preview.py")

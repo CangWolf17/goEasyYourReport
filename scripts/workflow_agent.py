@@ -9,7 +9,8 @@ if __package__ in {None, ""}:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts._shared import emit_json, load_json, project_path, run_python_script
+from scripts._shared import dump_json, emit_json, load_json, project_path, run_python_script
+from scripts._task_contract import dump_task_contract, load_task_contract
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -47,6 +48,48 @@ def response(
         "warnings": warnings or [],
         "next_step": next_step,
     }
+
+
+def task_contract_path(project_root: Path) -> Path:
+    return project_root / "report.task.yaml"
+
+
+def summarize_task_contract(task_contract: dict[str, object]) -> dict[str, object]:
+    task = task_contract.get("task", {})
+    runtime = task_contract.get("runtime", {})
+    return {
+        "stage": task.get("stage"),
+        "ready_to_write": task.get("ready_to_write"),
+        "next_step": runtime.get("next_step"),
+    }
+
+
+def sync_preview_summary(project_root: Path, task_contract: dict[str, object]) -> None:
+    summary_path = project_path(project_root, "out/preview.summary.json")
+    if not summary_path.exists():
+        return
+    summary_payload = load_json(summary_path)
+    summary_payload["task_contract"] = summarize_task_contract(task_contract)
+    dump_json(summary_path, summary_payload)
+
+
+def sync_prepare_task_contract(
+    project_root: Path, warnings: list[object]
+) -> dict[str, object]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    task_contract["task"]["stage"] = (
+        "awaiting_confirmation" if warnings else "ready_to_build"
+    )
+    task_contract["task"]["needs_user_input"] = bool(warnings)
+    task_contract["runtime"]["preview_output"] = "./out/preview.docx"
+    task_contract["runtime"]["template_plan"] = "./config/template.plan.json"
+    task_contract["runtime"]["field_binding"] = "./config/field.binding.json"
+    task_contract["runtime"]["next_step"] = (
+        "review_preview_summary" if warnings else "build"
+    )
+    dump_task_contract(task_contract_path(project_root), task_contract)
+    sync_preview_summary(project_root, task_contract)
+    return task_contract
 
 
 def run_repo_script(
@@ -172,6 +215,7 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     summary_payload = load_json(summary_path) if summary_path.exists() else {}
     review = summary_payload.get("review", {})
     warnings = review.get("needs_confirmation", []) if isinstance(review, dict) else []
+    sync_prepare_task_contract(project_root, warnings)
     payload = response(
         "prepare",
         "ok",
