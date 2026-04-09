@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import importlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,32 @@ def dump_json(path: Path, payload: Any) -> None:
 def emit_json(payload: Any) -> None:
     json.dump(payload, sys.stdout, indent=2, ensure_ascii=True)
     sys.stdout.write("\n")
+
+
+def run_python_script(script: Path, *args: str) -> dict[str, Any]:
+    result = subprocess.run(
+        [sys.executable, str(script), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    stdout = result.stdout.strip()
+    payload = None
+    json_error = None
+    if stdout:
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            json_error = str(exc)
+    return {
+        "returncode": result.returncode,
+        "stdout": stdout,
+        "stderr": result.stderr.strip(),
+        "json": payload,
+        "json_error": json_error,
+    }
 
 
 def ensure_text_file(path: Path, content: str, overwrite: bool = False) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -110,9 +111,53 @@ def sync_script_skeleton(target_root: Path, *, overwrite: bool = False) -> list[
     return copied
 
 
+def sync_user_profile_language(
+    user_profile_text: str, workflow_text: str, *, default_language: str = "zh-CN"
+) -> str:
+    language = default_language
+    try:
+        workflow = json.loads(workflow_text)
+    except json.JSONDecodeError:
+        workflow = {}
+
+    language = workflow.get("project", {}).get("language") or default_language
+    preference_line = f"- 语言偏好：{language}"
+    lines = user_profile_text.splitlines()
+    preserved_trailing_newline = user_profile_text.endswith("\n")
+
+    for index, line in enumerate(lines):
+        if line.startswith("- 语言偏好："):
+            lines[index] = preference_line
+            break
+    else:
+        insert_at = None
+        for index, line in enumerate(lines):
+            if line.strip() == "## Defaults":
+                insert_at = index + 1
+                while insert_at < len(lines) and lines[insert_at].startswith("- "):
+                    insert_at += 1
+                break
+
+        if insert_at is None:
+            lines.append("")
+            lines.append("## Defaults")
+            lines.append(preference_line)
+        else:
+            lines.insert(insert_at, preference_line)
+
+    content = "\n".join(lines)
+    if preserved_trailing_newline:
+        content += "\n"
+    return content
+
+
 def default_file_templates() -> dict[str, str]:
+    workflow_text = (PROJECT_ROOT / "workflow.json").read_text(encoding="utf-8")
+    user_profile_text = (PROJECT_ROOT / "user" / "user.md").read_text(
+        encoding="utf-8"
+    )
     return {
-        "workflow.json": (PROJECT_ROOT / "workflow.json").read_text(encoding="utf-8"),
+        "workflow.json": workflow_text,
         "config/template.plan.json": (
             PROJECT_ROOT / "config" / "template.plan.json"
         ).read_text(encoding="utf-8"),
@@ -122,7 +167,7 @@ def default_file_templates() -> dict[str, str]:
         "config/code-theme.user.sample.json": (
             PROJECT_ROOT / "config" / "code-theme.user.sample.json"
         ).read_text(encoding="utf-8"),
-        "user/user.md": (PROJECT_ROOT / "user" / "user.md").read_text(encoding="utf-8"),
+        "user/user.md": sync_user_profile_language(user_profile_text, workflow_text),
         "user/soul.md": (PROJECT_ROOT / "user" / "soul.md").read_text(encoding="utf-8"),
         "docs/report_body.md": (PROJECT_ROOT / "docs" / "report_body.md").read_text(
             encoding="utf-8"
@@ -217,6 +262,7 @@ def main() -> int:
     script_results = [run_optional("list_private_fields.py", root)]
     if template_user.exists():
         script_results.append(run_optional("scan_template.py", root))
+        script_results.append(run_optional("recommend_template_styles.py", root))
         script_results.append(run_optional("build_preview.py", root))
 
     init_report = {
