@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import docx
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +156,18 @@ class ConfirmationPackageTests(unittest.TestCase):
             text=True,
         )
 
+    def set_ready_to_write(self, project_root: Path, ready: bool = True) -> None:
+        task_path = project_root / "report.task.yaml"
+        payload = yaml.safe_load(task_path.read_text(encoding="utf-8"))
+        payload["task"]["ready_to_write"] = ready
+        payload["task"]["needs_user_input"] = not ready
+        payload["task"]["stage"] = "ready_to_build" if ready else "collecting_materials"
+        payload["runtime"]["next_step"] = "build" if ready else "prepare"
+        task_path.write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
     def insert_toc_placeholder(self, project_root: Path) -> None:
         template_path = project_root / "templates" / "template.user.docx"
         template = docx.Document(template_path)
@@ -287,6 +300,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             "## Code Example\n\n```python\nprint('ok')\n```",
             encoding="utf-8",
         )
+        self.set_ready_to_write(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -306,6 +320,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             '## Rust Example\n\n```rust\nfn main() {\n    println!("hi");\n}\n```',
             encoding="utf-8",
         )
+        self.set_ready_to_write(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -324,6 +339,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             "## Figures\n\n![Missing](images/missing.png)\n",
             encoding="utf-8",
         )
+        self.set_ready_to_write(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -387,6 +403,7 @@ class ConfirmationPackageTests(unittest.TestCase):
     def test_workflow_agent_build_blocks_on_unresolved_toc_confirmation(self) -> None:
         project_root = self.create_project()
         self.insert_toc_placeholder(project_root)
+        self.set_ready_to_write(project_root)
 
         result = self.run_workflow(project_root, "build")
 

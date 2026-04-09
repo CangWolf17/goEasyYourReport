@@ -297,6 +297,25 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
 
 
 def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    task = task_contract.get("task", {})
+    if not bool(task.get("ready_to_write", False)):
+        task_contract["task"]["needs_user_input"] = True
+        task_contract["runtime"]["next_step"] = "resolve_report_task_gate"
+        dump_task_contract(task_contract_path(project_root), task_contract)
+        return 1, response(
+            "build",
+            "needs_user_confirmation",
+            "Build blocked until report task is ready_to_write",
+            issues=[
+                {
+                    "kind": "not_ready_to_write",
+                    "details": "report.task.yaml indicates materials or confirmations are incomplete",
+                }
+            ],
+            next_step="resolve_report_task_gate",
+        )
+
     plan_path = project_path(project_root, "config/template.plan.json")
     if plan_path.exists():
         plan = load_json(plan_path)
@@ -361,6 +380,11 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
 
     if result["returncode"] != 0:
         return error_from_script("build", "build_report.py", result)
+
+    task_contract["task"]["stage"] = "redacted_built"
+    task_contract["runtime"]["redacted_output"] = "./out/redacted.docx"
+    task_contract["runtime"]["next_step"] = "verify"
+    dump_task_contract(task_contract_path(project_root), task_contract)
 
     return 0, response(
         "build",

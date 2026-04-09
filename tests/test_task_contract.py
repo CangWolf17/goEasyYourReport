@@ -29,6 +29,12 @@ class TaskContractTests(unittest.TestCase):
             (project_root / "report.task.yaml").read_text(encoding="utf-8")
         )
 
+    def dump_task_yaml(self, project_root: Path, payload: dict[str, object]) -> None:
+        (project_root / "report.task.yaml").write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
     def init_project(self, project_root: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -126,6 +132,48 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(runtime["template_plan"], "./config/template.plan.json")
         self.assertEqual(runtime["field_binding"], "./config/field.binding.json")
         self.assertIn(runtime["next_step"], {"review_preview_summary", "build"})
+
+    def test_workflow_agent_build_blocks_when_report_task_not_ready(self) -> None:
+        project_root = self.create_project()
+
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn(
+            payload["status"],
+            {"needs_user_confirmation", "needs_agent_handoff"},
+        )
+        self.assertTrue(
+            "ready_to_write" in payload["summary"]
+            or any(
+                "ready_to_write" in str(item)
+                for item in payload.get("issues", [])
+            )
+        )
+        self.assertFalse((project_root / "out" / "redacted.docx").exists())
+
+    def test_workflow_agent_build_allows_ready_to_write_task(self) -> None:
+        project_root = self.create_project()
+
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+        task_contract = self.load_task_yaml(project_root)
+        task_contract["task"]["ready_to_write"] = True
+        self.dump_task_yaml(project_root, task_contract)
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        updated = self.load_task_yaml(project_root)
+        self.assertEqual(updated["task"]["stage"], "redacted_built")
+        self.assertEqual(updated["runtime"]["redacted_output"], "./out/redacted.docx")
+        self.assertEqual(updated["runtime"]["next_step"], "verify")
 
 
 if __name__ == "__main__":
