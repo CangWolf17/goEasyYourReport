@@ -5,6 +5,7 @@ import re
 
 
 REFERENCE_SECTION_TITLES = {"参考文献", "references"}
+TOC_PLACEHOLDER_TEXTS = {"目录", "contents"}
 REQUIRED_SEMANTIC_STYLES = [
     "题目",
     "标题2",
@@ -111,6 +112,37 @@ def ensure_plan_semantics(plan: dict[str, object]) -> dict[str, object]:
     return semantics
 
 
+def normalize_section_heading(text: str) -> str:
+    normalized = text.strip()
+    normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", normalized)
+    normalized = re.sub(r"^\s*\d+(?:\s*\.\s*\d+)*(?:[.)、])?\s*", "", normalized)
+    normalized = re.sub(r"[:：]\s*$", "", normalized)
+    return normalized.strip().lower()
+
+
+def strip_section_prefix(text: str) -> str:
+    return normalize_section_heading(text)
+
+
+def is_reference_section_title(text: str) -> bool:
+    return normalize_section_heading(text) in REFERENCE_SECTION_TITLES
+
+
+def paragraph_has_toc_field(paragraph) -> bool:
+    xml = paragraph._p.xml
+    return 'instr="TOC' in xml or " TOC " in xml
+
+
+def is_toc_placeholder_paragraph(paragraph) -> bool:
+    text = paragraph.text.strip().lower()
+    style_name = (
+        paragraph.style.name.lower()
+        if getattr(paragraph, "style", None) is not None
+        else ""
+    )
+    return text in TOC_PLACEHOLDER_TEXTS or "toc" in style_name
+
+
 def style_outline_level(style) -> int | None:
     if style is None or getattr(style, "element", None) is None:
         return None
@@ -128,30 +160,16 @@ def style_outline_level(style) -> int | None:
 
 def detect_toc_signal(paragraphs: list[object]) -> dict[str, object]:
     for paragraph in paragraphs:
-        text = paragraph.text.strip().lower()
-        style_name = (
-            paragraph.style.name.lower()
-            if getattr(paragraph, "style", None) is not None
-            else ""
-        )
-        if "toc" in style_name or text in {"目录", "contents"}:
+        if is_toc_placeholder_paragraph(paragraph):
             return {"detected": True, "kind": "placeholder"}
-        if 'instr="TOC' in paragraph._p.xml or " TOC " in paragraph._p.xml:
+        if paragraph_has_toc_field(paragraph):
             return {"detected": True, "kind": "field"}
     return {"detected": False, "kind": "none"}
 
 
-def strip_section_prefix(text: str) -> str:
-    normalized = re.sub(r"^\s*[一二三四五六七八九十]+\s*[、.]?\s*", "", text.strip())
-    normalized = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", normalized)
-    normalized = re.sub(r"[:：]\s*$", "", normalized)
-    return normalized.strip().lower()
-
-
 def detect_reference_block_signal(paragraphs: list[object]) -> dict[str, object]:
     for paragraph in paragraphs:
-        text = strip_section_prefix(paragraph.text)
-        if text in REFERENCE_SECTION_TITLES:
+        if is_reference_section_title(paragraph.text):
             return {"present": True}
     return {"present": False}
 
