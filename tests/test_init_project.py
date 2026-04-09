@@ -1339,7 +1339,9 @@ class InitProjectTests(unittest.TestCase):
 
             caption_element = table._tbl.getprevious()
             self.assertIsNotNone(caption_element)
-            self.assertIn("表1", caption_element.xpath("string()"))
+            caption_xml = caption_element.xml
+            self.assertIn("SEQ 表", caption_xml)
+            self.assertIn("bookmarkStart", caption_xml)
 
             caption_texts = [
                 (paragraph.text.strip(), paragraph.style.name)
@@ -1405,6 +1407,64 @@ class InitProjectTests(unittest.TestCase):
 
             self.assertIn("表1 实验环境与参数", caption_texts)
             self.assertNotIn("表1 3 实验环境与参数", caption_texts)
+
+    def test_build_report_replaces_figure_and_table_reference_placeholders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            image_path = project_root / "docs" / "images" / "arch.png"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(TEST_PNG_BYTES)
+
+            plan_path = project_root / "config" / "template.plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["semantics"]["cross_references"]["figure_table_enabled"] = True
+            plan_path.write_text(
+                json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Figures\n\n![Architecture](images/arch.png)\n\n[[REF:figure:fig_0001|见下图]] 展示了系统结构。\n\n## Metrics\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\n[[REF:table:tbl_0001|见上表]] 汇总了实验结果。\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered = {
+                paragraph.text.strip(): paragraph._p.xml
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+            }
+
+            self.assertIn("见下图1 展示了系统结构。", rendered)
+            self.assertIn("REF fig_0001", rendered["见下图1 展示了系统结构。"])
+            self.assertIn("见上表1 汇总了实验结果。", rendered)
+            self.assertIn("REF tbl_0001", rendered["见上表1 汇总了实验结果。"])
 
     def test_build_report_applies_reference_style_in_reference_section(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

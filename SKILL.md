@@ -58,6 +58,9 @@ Return codes:
 - Treat style-gap confirmation as a real review gate; do not silently decide missing list semantics or outline semantics in code.
 - The preview package must surface TOC / reference-block detection in preview rather than auto-inserting those blocks.
 - If a semantic style recommendation is pending, handle that semantic style recommendation before build instead of assuming repo defaults should override the template.
+- TOC is inserted only when detected and confirmed; if template scan finds a TOC signal and confirmation is unresolved, stop at preview/build and review `out/preview.summary.json`.
+- figure / table cross-references are a post-processing step over explicit `[[REF:figure:...]]` and `[[REF:table:...]]` placeholders, not a first-pass inline text rewrite.
+- cross-reference insertion requires user confirmation before build; do not silently enable figure/table reference insertion on behalf of the user.
 
 ## Code Rendering Contract
 - Supported fenced code languages are `python`, `json`, `bash`, `yaml`, `sql`, `javascript`, `typescript`, `c`, `cpp`, and `java`.

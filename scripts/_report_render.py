@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+from scripts._docx_fields import add_bookmark, append_complex_field
+from scripts._report_markdown import cross_reference_placeholder_text
 from scripts._docx_semantics import (
     apply_default_table_rules,
     should_bold_first_column,
@@ -14,6 +16,7 @@ from scripts._docx_xml import (
     clear_paragraph,
     insert_paragraph_after,
     insert_paragraph_before,
+    set_paragraph_pagination,
     word_qn,
 )
 from scripts._shared import load_json, project_path
@@ -577,6 +580,30 @@ def make_caption(prefix: str, index: int, label: str | None = None) -> str:
     return f"{prefix}{index}{suffix}"
 
 
+def apply_caption_field(
+    paragraph,
+    *,
+    style_name: str | None,
+    prefix: str,
+    sequence_name: str,
+    ordinal: int,
+    bookmark_name: str,
+    label: str | None = None,
+) -> None:
+    clear_paragraph(paragraph)
+    apply_named_style(paragraph, style_name)
+    set_paragraph_pagination(paragraph, keep_next=True, keep_lines=True)
+    add_bookmark(paragraph, bookmark_name)
+    paragraph.add_run(prefix)
+    append_complex_field(
+        paragraph,
+        f" SEQ {sequence_name} \\\\* ARABIC ",
+        display_text=str(ordinal),
+    )
+    if label and label.strip():
+        paragraph.add_run(f" {label.strip()}")
+
+
 def caption_label_from_heading(text: str) -> str:
     stripped = text.strip()
     normalized = SECTION_NUMBER_PREFIX_RE.sub("", stripped, count=1).strip()
@@ -623,6 +650,7 @@ def apply_image_block(
         paragraph.alignment = importlib.import_module(
             "docx.enum.text"
         ).WD_ALIGN_PARAGRAPH.CENTER
+        set_paragraph_pagination(paragraph, keep_next=True, keep_lines=True)
         run = paragraph.add_run()
         run.add_picture(str(resolved_path), width=width)
         image_status["inserted"].append(details)
@@ -647,6 +675,7 @@ def apply_block(
         paragraph.part.document.styles, body_style_name(available_styles)
     )
     text = str(block.get("text", ""))
+    segments = block.get("segments")
     kind = block.get("kind")
     if forced_style is not None:
         apply_named_style(paragraph, forced_style)
@@ -672,9 +701,19 @@ def apply_block(
             text = fallback_list_text(block)
     else:
         apply_named_style(paragraph, body_style_name(available_styles))
+    if kind == "paragraph" and isinstance(segments, list):
+        for segment in segments:
+            if segment.get("kind") == "cross_reference":
+                paragraph.add_run(cross_reference_placeholder_text(segment))
+            else:
+                paragraph.add_run(str(segment.get("text", "")))
+        apply_paragraph_font_settings(paragraph, body_font)
+        return
     run = paragraph.add_run(text)
     if kind == "list_item":
         apply_run_font_settings(run, body_font)
+    elif kind == "paragraph":
+        apply_paragraph_font_settings(paragraph, body_font)
 
 
 def render_blocks(
@@ -757,16 +796,14 @@ def render_blocks(
             if not isinstance(rows, list):
                 rows = []
             table_index += 1
-            apply_block(
+            apply_caption_field(
                 current,
-                {
-                    "kind": "paragraph",
-                    "text": make_caption(
-                        "表", table_index, caption_label_from_heading(last_heading_text)
-                    ),
-                },
-                available_styles,
-                forced_style=table_caption_style_name(available_styles),
+                style_name=table_caption_style_name(available_styles),
+                prefix="表",
+                sequence_name="表",
+                ordinal=table_index,
+                bookmark_name=f"tbl_{table_index:04d}",
+                label=caption_label_from_heading(last_heading_text),
             )
             used_last = insert_markdown_table_after(current, rows, width)
         elif first_kind == "image":
@@ -782,16 +819,14 @@ def render_blocks(
             used_last = image_paragraph
             if inserted:
                 caption = insert_paragraph_after(image_paragraph)
-                apply_block(
+                apply_caption_field(
                     caption,
-                    {
-                        "kind": "paragraph",
-                        "text": make_caption(
-                            "图", figure_index, str(first_block.get("alt", "")).strip()
-                        ),
-                    },
-                    available_styles,
-                    forced_style=figure_caption_style_name(available_styles),
+                    style_name=figure_caption_style_name(available_styles),
+                    prefix="图",
+                    sequence_name="图",
+                    ordinal=figure_index,
+                    bookmark_name=f"fig_{figure_index:04d}",
+                    label=str(first_block.get("alt", "")).strip(),
                 )
                 used_last = caption
         else:
@@ -827,16 +862,14 @@ def render_blocks(
         elif block.get("kind") == "table":
             table_index += 1
             caption = insert_paragraph_after(used_last)
-            apply_block(
+            apply_caption_field(
                 caption,
-                {
-                    "kind": "paragraph",
-                    "text": make_caption(
-                        "表", table_index, caption_label_from_heading(last_heading_text)
-                    ),
-                },
-                available_styles,
-                forced_style=table_caption_style_name(available_styles),
+                style_name=table_caption_style_name(available_styles),
+                prefix="表",
+                sequence_name="表",
+                ordinal=table_index,
+                bookmark_name=f"tbl_{table_index:04d}",
+                label=caption_label_from_heading(last_heading_text),
             )
             rows = block.get("rows", [])
             if not isinstance(rows, list):
@@ -856,16 +889,14 @@ def render_blocks(
             used_last = image_paragraph
             if inserted:
                 caption = insert_paragraph_after(image_paragraph)
-                apply_block(
+                apply_caption_field(
                     caption,
-                    {
-                        "kind": "paragraph",
-                        "text": make_caption(
-                            "图", figure_index, str(block.get("alt", "")).strip()
-                        ),
-                    },
-                    available_styles,
-                    forced_style=figure_caption_style_name(available_styles),
+                    style_name=figure_caption_style_name(available_styles),
+                    prefix="图",
+                    sequence_name="图",
+                    ordinal=figure_index,
+                    bookmark_name=f"fig_{figure_index:04d}",
+                    label=str(block.get("alt", "")).strip(),
                 )
                 used_last = caption
         else:

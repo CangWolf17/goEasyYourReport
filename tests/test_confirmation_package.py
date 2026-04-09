@@ -58,6 +58,16 @@ class ConfirmationPackageTests(unittest.TestCase):
             self.assertIn("TOC / reference-block detection in preview", text)
             self.assertIn("semantic style recommendation before build", text)
 
+    def test_repo_docs_describe_toc_and_cross_reference_workflow(self) -> None:
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text, readme_text):
+            self.assertIn("TOC is inserted only when detected and confirmed", text)
+            self.assertIn("figure / table cross-references are a post-processing step", text)
+            self.assertIn("cross-reference insertion requires user confirmation", text)
+
     def test_init_project_copies_code_theme_sample(self) -> None:
         project_root = self.create_project()
 
@@ -124,6 +134,29 @@ class ConfirmationPackageTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def insert_toc_placeholder(self, project_root: Path) -> None:
+        template_path = project_root / "templates" / "template.user.docx"
+        template = docx.Document(template_path)
+        anchor = next(
+            paragraph
+            for paragraph in template.paragraphs
+            if getattr(paragraph.style, "name", "") == "标题2"
+        )
+        anchor.insert_paragraph_before("目录")
+        template.save(template_path)
+
+        result = subprocess.run(
+            [
+                str(PYTHON),
+                str(project_root / "scripts" / "scan_template.py"),
+                "--project-root",
+                str(project_root),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
 
     def assert_normalized_agent_payload(
         self, payload: dict[str, object], action: str
@@ -312,6 +345,18 @@ class ConfirmationPackageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, msg=result.stderr)
         payload = json.loads(result.stdout)
         self.assert_normalized_agent_payload(payload, "preview")
+        self.assertEqual(payload["status"], "needs_user_confirmation")
+        self.assertEqual(payload["next_step"], "review_preview_summary")
+
+    def test_workflow_agent_build_blocks_on_unresolved_toc_confirmation(self) -> None:
+        project_root = self.create_project()
+        self.insert_toc_placeholder(project_root)
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "build")
         self.assertEqual(payload["status"], "needs_user_confirmation")
         self.assertEqual(payload["next_step"], "review_preview_summary")
 

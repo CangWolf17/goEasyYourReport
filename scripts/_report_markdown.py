@@ -8,6 +8,10 @@ IMAGE_PATTERN = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)$")
 ORDERED_LIST_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<number>\d+)\.\s+(?P<text>.+)$")
 UNORDERED_LIST_PATTERN = re.compile(r"^(?P<indent>\s*)[-*]\s+(?P<text>.+)$")
 TABLE_SEPARATOR_PATTERN = re.compile(r"^:?-{3,}:?$")
+REFERENCE_PLACEHOLDER_PATTERN = re.compile(
+    r"\[\[REF:(?P<target_kind>figure|table|equation|bibliography):"
+    r"(?P<target_id>[A-Za-z0-9_]+)(?:\|(?P<prefix>[^\]]*))?\]\]"
+)
 
 
 def parse_image_block(line: str) -> dict[str, object] | None:
@@ -35,6 +39,7 @@ def parse_list_item(raw_line: str) -> dict[str, object] | None:
         return {
             "kind": "list_item",
             "ordered": ordered,
+            "number": int(match.group("number")) if ordered else None,
             "depth": min(indent // 2, 2),
             "text": match.group("text").strip(),
         }
@@ -82,6 +87,35 @@ def parse_simple_table(
     return rows, consumed
 
 
+def cross_reference_placeholder_text(segment: dict[str, object]) -> str:
+    prefix = segment.get("prefix")
+    suffix = f"|{prefix}" if prefix is not None else ""
+    return (
+        f"[[REF:{segment['target_kind']}:{segment['target_id']}{suffix}]]"
+    )
+
+
+def parse_paragraph_segments(text: str) -> list[dict[str, object]]:
+    segments: list[dict[str, object]] = []
+    cursor = 0
+    for match in REFERENCE_PLACEHOLDER_PATTERN.finditer(text):
+        if match.start() > cursor:
+            segments.append({"kind": "text", "text": text[cursor : match.start()]})
+        prefix = match.group("prefix")
+        segment = {
+            "kind": "cross_reference",
+            "target_kind": match.group("target_kind"),
+            "target_id": match.group("target_id"),
+        }
+        if prefix is not None:
+            segment["prefix"] = prefix
+        segments.append(segment)
+        cursor = match.end()
+    if cursor < len(text):
+        segments.append({"kind": "text", "text": text[cursor:]})
+    return segments or [{"kind": "text", "text": text}]
+
+
 def markdown_to_blocks(path: Path) -> list[dict[str, object]]:
     lines = path.read_text(encoding="utf-8").splitlines()
     blocks: list[dict[str, object]] = []
@@ -93,7 +127,14 @@ def markdown_to_blocks(path: Path) -> list[dict[str, object]]:
     def flush_paragraph() -> None:
         nonlocal paragraph_lines
         if paragraph_lines:
-            blocks.append({"kind": "paragraph", "text": " ".join(paragraph_lines)})
+            text = " ".join(paragraph_lines)
+            blocks.append(
+                {
+                    "kind": "paragraph",
+                    "text": text,
+                    "segments": parse_paragraph_segments(text),
+                }
+            )
             paragraph_lines = []
 
     def flush_code() -> None:

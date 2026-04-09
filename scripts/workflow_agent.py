@@ -240,6 +240,28 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
 
 
 def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
+    plan_path = project_path(project_root, "config/template.plan.json")
+    if plan_path.exists():
+        plan = load_json(plan_path)
+        semantics = plan.get("semantics", {})
+        toc = semantics.get("toc", {}) if isinstance(semantics, dict) else {}
+        if isinstance(toc, dict) and toc.get("detected") and toc.get(
+            "needs_confirmation", False
+        ):
+            preview_result = run_repo_script("build_preview.py", project_root)
+            if preview_result["returncode"] != 0:
+                return error_from_script("build", "build_preview.py", preview_result)
+            return 1, response(
+                "build",
+                "needs_user_confirmation",
+                "Build blocked until TOC confirmation is resolved",
+                artifacts={
+                    "preview": "./out/preview.docx",
+                    "preview_summary": "./out/preview.summary.json",
+                },
+                next_step="review_preview_summary",
+            )
+
     result = run_repo_script("build_report.py", project_root)
     if result["json"] is None:
         return error_from_script("build", "build_report.py", result)

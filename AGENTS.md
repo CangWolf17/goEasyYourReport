@@ -46,6 +46,9 @@
 - `scripts/build_report.py` now validates the saved package with the repo-owned DOCX integrity gate before reporting success.
 - `scripts/scan_template.py` now performs a semantic template scan and persists style candidates, style gaps, outline completeness, and TOC / reference-block signals into `config/template.plan.json`.
 - `scripts/build_preview.py` now surfaces style-gap confirmation and semantic style recommendation before build; it does not silently resolve unresolved list semantics or TOC policy.
+- TOC is inserted only when detected and confirmed; if `semantics.toc.needs_confirmation` is still true, `workflow_agent.py build` must stop for review instead of silently building through it.
+- figure / table cross-references are a post-processing step over explicit placeholder tokens such as `[[REF:figure:fig_0001]]` and `[[REF:table:tbl_0001]]`.
+- cross-reference insertion requires user confirmation; keep `semantics.cross_references.figure_table_enabled` unresolved until the user or upstream task explicitly decides it.
 - `scripts/_docx_integrity.py` owns ZIP/XML/relationship validation; `scripts/_docx_xml.py` is the whitelist for shared low-level DOCX XML helpers.
 - The current code-table implementation passes an explicit width to `add_table(...)`; do not remove that casually.
 - `tests/test_init_project.py` hardcodes `D:\Miniconda\python.exe`. If the interpreter changes, the tests need to change too.
