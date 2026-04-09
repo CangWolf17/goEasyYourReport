@@ -5,7 +5,7 @@ Document-first Python workflow skeleton for generating reviewable DOCX reports f
 ## What This Repo Does
 
 - scans a DOCX template into locked and fillable regions
-- builds `preview.docx` plus `preview.summary.json` for confirmation
+- runs a semantic template scan, then builds `preview.docx` plus `preview.summary.json` for confirmation
 - builds `redacted.docx` from `docs/report_body.md`
 - injects private fields into `out/private.docx`
 - verifies locked-region preservation before private output
@@ -14,6 +14,7 @@ Current Markdown support includes:
 - headings and paragraphs
 - styled code blocks with a light printable theme
 - syntax highlighting for `python`, `json`, `bash`, `yaml`, `sql`, `javascript`, `typescript`, `c`, `cpp`, and `java`
+- alias normalization for `py`, `sh`, `shell`, `yml`, `js`, `ts`, `c++`, `cc`, and `cxx`
 - lists
 - simple pipe tables
 - image insertion with failure reporting
@@ -26,47 +27,66 @@ This repo uses `uv` for environment management.
 uv sync
 ```
 
-## Key Commands
+## Agent Entry Point
 
-Run the full test suite:
+Use `scripts/workflow_agent.py` for normal agent work. It is the stable façade over the lower-level workflow scripts.
+
+Stable actions:
+- `prepare` refreshes the workspace, runs the semantic template scan, inspects private fields, and rebuilds the preview package.
+- `preview` rebuilds preview artifacts for confirmation, including style-gap confirmation and TOC / reference-block detection in preview.
+- `build` generates `out/redacted.docx`, runs a DOCX integrity gate, and emits structured code/image issues.
+- `verify` checks a DOCX against the current plan.
+- `inject` creates `out/private.docx` from confirmed private data.
+- `cleanup` removes only recyclable artifacts.
+
+The façade prints JSON with `action`, `status`, `summary`, `artifacts`, `issues`, `warnings`, and `next_step`.
+
+Return codes:
+- `0` means success and you can continue.
+- `1` means the action finished but the agent must stop for user confirmation or another handoff.
+- `2` means the action failed and needs troubleshooting.
+
+Build success now requires a valid DOCX package. If the DOCX integrity gate fails, the façade returns `kind=docx_integrity_error` and the agent must stop before `verify` or `inject`.
+
+Before build, the workflow may also stop for semantic style recommendation before build if the template is missing required semantic styles or outline metadata.
+
+Run it with:
 
 ```powershell
-uv run -m unittest discover -s tests -v
+uv run python scripts\workflow_agent.py prepare --project-root .
+uv run python scripts\workflow_agent.py build --project-root .
+uv run python scripts\workflow_agent.py verify --project-root . --target redacted
 ```
 
-Initialize a new workflow project in the current directory:
+Inject private fields only after `build` and `verify` both succeed without handoff:
 
 ```powershell
-uv run python scripts\init_project.py --project-root .
-```
-
-Scan the template and rebuild the preview package:
-
-```powershell
-uv run python scripts\scan_template.py --project-root .
-uv run python scripts\build_preview.py --project-root .
-uv run python scripts\verify_report.py --project-root . --docx out\preview.docx
-```
-
-Build and verify the redacted report:
-
-```powershell
-uv run python scripts\build_report.py --project-root .
-uv run python scripts\verify_report.py --project-root . --docx out\redacted.docx
-```
-
-Inject private fields after the preview and redacted outputs are correct:
-
-```powershell
-uv run python scripts\inject_private_fields.py --project-root . --source temp\private-fields.sample.json
+uv run python scripts\workflow_agent.py inject --project-root . --source temp\private-fields.sample.json
 ```
 
 ## Important Behavior
 
 - `preview.docx` is for confirmation, not final delivery.
-- `build_report.py` returns nonzero when image insertion fails or when code blocks use unsupported languages, so an agent can step in and ask the user how to proceed.
-- unsupported code languages still render as styled fallback blocks, but are reported in structured output as `agent_handoff_required`.
-- do not read `out/private.docx` in agent automation flows.
+- `build` does not count as successful unless `out/redacted.docx` passes the repo-owned DOCX integrity gate.
+- `docx_integrity_error` is a blocking error, not a soft handoff; fix it before `verify` or `inject`.
+- The preview package includes a semantic template scan, style-gap confirmation, and TOC / reference-block detection in preview.
+- Repo defaults apply only when the task book and the selected template do not already specify the semantic style choice.
+- Unsupported fenced code languages still render as styled fallback blocks, but they are reported as `kind=unsupported_code_language` and require handoff before private injection.
+- Image insertion failures are surfaced as `kind=image_insert_failed` and also require handoff before private injection.
+- Do not read `out/private.docx` in agent automation flows.
+- The façade is the normal agent entrypoint; the lower-level scripts remain implementation details.
+
+## Lower-Level Scripts
+
+Use direct scripts only when you are debugging a single stage or intentionally reproducing a lower-level issue:
+- `scripts/init_project.py`
+- `scripts/list_private_fields.py`
+- `scripts/scan_template.py`
+- `scripts/build_preview.py`
+- `scripts/build_report.py`
+- `scripts/verify_report.py`
+- `scripts/inject_private_fields.py`
+- `scripts/cleanup_project.py`
 
 ## License
 

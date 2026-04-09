@@ -6,6 +6,16 @@ import json
 import re
 from pathlib import Path
 
+from scripts._docx_semantics import (
+    apply_default_table_rules,
+    should_bold_first_column,
+)
+from scripts._docx_xml import (
+    clear_paragraph,
+    insert_paragraph_after,
+    insert_paragraph_before,
+    word_qn,
+)
 from scripts._shared import load_json, project_path
 
 
@@ -52,12 +62,7 @@ BUILTIN_CODE_THEMES = {
 }
 
 REFERENCE_SECTION_TITLES = {"参考文献", "references"}
-
-
-def clear_paragraph(paragraph) -> None:
-    for child in list(paragraph._element):
-        paragraph._element.remove(child)
-
+SECTION_NUMBER_PREFIX_RE = re.compile(r"^\s*\d+(?:\s*\.\s*\d+)*(?:[.)、])?\s+")
 
 def preferred_style_name(available_styles: set[str], *candidates: str) -> str | None:
     for candidate in candidates:
@@ -75,6 +80,10 @@ def preferred_heading_style(level: int, available_styles: set[str]) -> str | Non
         4: ("标题4", "Heading 4"),
     }
     return preferred_style_name(available_styles, *style_map[level])
+
+
+def title_style_name(available_styles: set[str]) -> str | None:
+    return preferred_style_name(available_styles, "题目", "Title", "Heading 1", "标题2")
 
 
 def body_style_name(available_styles: set[str]) -> str | None:
@@ -169,33 +178,6 @@ def load_code_block_theme(project_root: Path | str) -> dict[str, object]:
         "roles": roles,
     }
 
-
-def insert_paragraph_after(block):
-    paragraph_module = importlib.import_module("docx.text.paragraph")
-    xml_module = importlib.import_module("docx.oxml")
-    new_p = xml_module.OxmlElement("w:p")
-    if hasattr(block, "_p"):
-        block._p.addnext(new_p)
-        parent = block._parent
-    else:
-        block._tbl.addnext(new_p)
-        parent = block._parent
-    return paragraph_module.Paragraph(new_p, parent)
-
-
-def insert_paragraph_before(block):
-    paragraph_module = importlib.import_module("docx.text.paragraph")
-    xml_module = importlib.import_module("docx.oxml")
-    new_p = xml_module.OxmlElement("w:p")
-    if hasattr(block, "_p"):
-        block._p.addprevious(new_p)
-        parent = block._parent
-    else:
-        block._tbl.addprevious(new_p)
-        parent = block._parent
-    return paragraph_module.Paragraph(new_p, parent)
-
-
 def content_width(doc):
     section = doc.sections[0]
     return section.page_width - section.left_margin - section.right_margin
@@ -241,11 +223,96 @@ def set_cell_border(cell, color: str) -> None:
         element.set(ns_module.qn("w:color"), normalize_hex_color(color))
 
 
+def style_font_settings(styles, style_name: str | None) -> dict[str, str] | None:
+    if not style_name:
+        return None
+    try:
+        style = styles[style_name]
+    except KeyError:
+        return None
+    r_pr = style.element.find(word_qn("w:rPr"))
+    if r_pr is None:
+        return None
+    r_fonts = r_pr.find(word_qn("w:rFonts"))
+    size = r_pr.find(word_qn("w:sz"))
+    settings = {
+        "ascii": None if r_fonts is None else r_fonts.get(word_qn("w:ascii")),
+        "hAnsi": None if r_fonts is None else r_fonts.get(word_qn("w:hAnsi")),
+        "eastAsia": None if r_fonts is None else r_fonts.get(word_qn("w:eastAsia")),
+        "size": None if size is None else size.get(word_qn("w:val")),
+    }
+    if not any(settings.values()):
+        return None
+    return settings
+
+
+def apply_run_font_settings(run, font_settings: dict[str, str] | None) -> None:
+    if not font_settings:
+        return
+    shared_module = importlib.import_module("docx.shared")
+    xml_module = importlib.import_module("docx.oxml")
+    Pt = shared_module.Pt
+
+    r_pr = run._r.get_or_add_rPr()
+    r_fonts = r_pr.find(word_qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = xml_module.OxmlElement("w:rFonts")
+        r_pr.append(r_fonts)
+
+    primary_name = (
+        font_settings.get("ascii")
+        or font_settings.get("hAnsi")
+        or font_settings.get("eastAsia")
+    )
+    if primary_name:
+        run.font.name = primary_name
+
+    for key in ("ascii", "hAnsi", "eastAsia"):
+        value = font_settings.get(key)
+        if value:
+            r_fonts.set(word_qn(f"w:{key}"), value)
+
+    size = font_settings.get("size")
+    if size:
+        run.font.size = Pt(int(size) / 2)
+        sz = r_pr.find(word_qn("w:sz"))
+        if sz is None:
+            sz = xml_module.OxmlElement("w:sz")
+            r_pr.append(sz)
+        sz.set(word_qn("w:val"), size)
+        sz_cs = r_pr.find(word_qn("w:szCs"))
+        if sz_cs is None:
+            sz_cs = xml_module.OxmlElement("w:szCs")
+            r_pr.append(sz_cs)
+        sz_cs.set(word_qn("w:val"), size)
+
+
+def apply_paragraph_font_settings(
+    paragraph, font_settings: dict[str, str] | None
+) -> None:
+    if not font_settings:
+        return
+    for run in paragraph.runs:
+        apply_run_font_settings(run, font_settings)
+
+
 def format_table_cell_paragraph(paragraph) -> None:
     shared_module = importlib.import_module("docx.shared")
     Pt = shared_module.Pt
     paragraph.paragraph_format.first_line_indent = Pt(0)
     paragraph.paragraph_format.line_spacing = 1.5
+    paragraph.alignment = importlib.import_module(
+        "docx.enum.text"
+    ).WD_ALIGN_PARAGRAPH.CENTER
+
+
+def table_cell_font_settings() -> dict[str, str]:
+    return {
+        "ascii": "宋体",
+        "hAnsi": "宋体",
+        "eastAsia": "宋体",
+        "size": "21",
+    }
 
 
 def convert_inline_picture_to_top_bottom_anchor(run) -> None:
@@ -486,19 +553,44 @@ def insert_markdown_table_after(block, rows: list[list[str]], width):
     for row_index, row_values in enumerate(rows):
         for col_index, value in enumerate(row_values):
             cell = table.cell(row_index, col_index)
+            cell.vertical_alignment = table_module.WD_CELL_VERTICAL_ALIGNMENT.CENTER
             cell.text = value
             for paragraph in cell.paragraphs:
                 format_table_cell_paragraph(paragraph)
+                apply_paragraph_font_settings(paragraph, table_cell_font_settings())
             if row_index == 0:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.bold = True
+    apply_default_table_rules(table)
+    if should_bold_first_column(rows):
+        for row_index in range(1, len(rows)):
+            cell = table.cell(row_index, 0)
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.bold = True
     return table
 
 
 def make_caption(prefix: str, index: int, label: str | None = None) -> str:
     suffix = f" {label.strip()}" if label and label.strip() else ""
     return f"{prefix}{index}{suffix}"
+
+
+def caption_label_from_heading(text: str) -> str:
+    stripped = text.strip()
+    normalized = SECTION_NUMBER_PREFIX_RE.sub("", stripped, count=1).strip()
+    return normalized or stripped
+
+
+def fallback_list_text(block: dict[str, object]) -> str:
+    text = str(block.get("text", "")).strip()
+    depth = max(int(block.get("depth", 0)), 0)
+    indent = "  " * depth
+    if block.get("ordered"):
+        number = int(block.get("number", 1) or 1)
+        return f"{indent}{number}. {text}"
+    return f"{indent}- {text}"
 
 
 def apply_image_block(
@@ -533,7 +625,6 @@ def apply_image_block(
         ).WD_ALIGN_PARAGRAPH.CENTER
         run = paragraph.add_run()
         run.add_picture(str(resolved_path), width=width)
-        convert_inline_picture_to_top_bottom_anchor(run)
         image_status["inserted"].append(details)
     except Exception as exc:
         if "Caption" in available_styles:
@@ -552,6 +643,9 @@ def apply_block(
     forced_style: str | None = None,
 ) -> None:
     clear_paragraph(paragraph)
+    body_font = style_font_settings(
+        paragraph.part.document.styles, body_style_name(available_styles)
+    )
     text = str(block.get("text", ""))
     kind = block.get("kind")
     if forced_style is not None:
@@ -565,13 +659,22 @@ def apply_block(
         depth = int(block.get("depth", 0))
         base = "List Number" if ordered else "List Bullet"
         style_name = base if depth == 0 else f"{base} {depth + 1}"
-        if style_name in available_styles:
+        semantic_style = "列表编号" if ordered else "列表符号"
+        text = str(block.get("text", ""))
+        if semantic_style in available_styles:
+            paragraph.style = semantic_style
+        elif style_name in available_styles:
             paragraph.style = style_name
         elif "List Paragraph" in available_styles:
             paragraph.style = "List Paragraph"
+            text = fallback_list_text(block)
+        else:
+            text = fallback_list_text(block)
     else:
         apply_named_style(paragraph, body_style_name(available_styles))
-    paragraph.add_run(text)
+    run = paragraph.add_run(text)
+    if kind == "list_item":
+        apply_run_font_settings(run, body_font)
 
 
 def render_blocks(
@@ -581,6 +684,7 @@ def render_blocks(
     body_dir: Path,
     code_theme: dict[str, object],
     code_status: dict[str, object],
+    semantics: dict[str, object] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     start_raw = region.get("start_paragraph")
     end_raw = region.get("end_paragraph")
@@ -602,10 +706,33 @@ def render_blocks(
     figure_index = 0
     table_index = 0
     last_heading_text = ""
+    bibliography = (semantics or {}).get("bibliography", {})
+    reference_output_enabled = bool(bibliography.get("output_block_present", False))
     in_reference_section = False
+    first_block_is_title = bool(
+        blocks
+        and blocks[0].get("kind") == "heading"
+        and int(blocks[0].get("level", 1)) == 1
+    )
+
+    def normalized_block(
+        block: dict[str, object], block_index: int
+    ) -> tuple[dict[str, object], str | None]:
+        if block.get("kind") != "heading":
+            return block, None
+        level = int(block.get("level", 1))
+        if block_index == 0 and first_block_is_title:
+            return block, title_style_name(available_styles)
+        if first_block_is_title and block_index > 0 and level > 1:
+            return {**block, "level": level - 1}, None
+        return block, None
 
     def paragraph_style_for_block(block: dict[str, object]) -> str | None:
-        if in_reference_section and block.get("kind") in {"paragraph", "list_item"}:
+        if (
+            reference_output_enabled
+            and in_reference_section
+            and block.get("kind") in {"paragraph", "list_item"}
+        ):
             return reference_style_name(available_styles)
         if block.get("kind") == "paragraph":
             return body_style_name(available_styles)
@@ -613,19 +740,20 @@ def render_blocks(
 
     current = original_region[0]
     if blocks:
-        first_kind = blocks[0].get("kind")
+        first_block, first_forced_style = normalized_block(blocks[0], 0)
+        first_kind = first_block.get("kind")
         if first_kind == "code":
             clear_paragraph(current)
             used_last = insert_code_table_after(
                 current,
-                str(blocks[0].get("text", "")),
+                str(first_block.get("text", "")),
                 width,
-                str(blocks[0].get("language", "") or "") or None,
+                str(first_block.get("language", "") or "") or None,
                 code_theme,
                 code_status,
             )
         elif first_kind == "table":
-            rows = blocks[0].get("rows", [])
+            rows = first_block.get("rows", [])
             if not isinstance(rows, list):
                 rows = []
             table_index += 1
@@ -633,7 +761,9 @@ def render_blocks(
                 current,
                 {
                     "kind": "paragraph",
-                    "text": make_caption("表", table_index, last_heading_text),
+                    "text": make_caption(
+                        "表", table_index, caption_label_from_heading(last_heading_text)
+                    ),
                 },
                 available_styles,
                 forced_style=table_caption_style_name(available_styles),
@@ -643,7 +773,7 @@ def render_blocks(
             figure_index += 1
             image_paragraph, inserted = apply_image_block(
                 current,
-                blocks[0],
+                first_block,
                 available_styles,
                 width,
                 body_dir,
@@ -657,7 +787,7 @@ def render_blocks(
                     {
                         "kind": "paragraph",
                         "text": make_caption(
-                            "图", figure_index, str(blocks[0].get("alt", "")).strip()
+                            "图", figure_index, str(first_block.get("alt", "")).strip()
                         ),
                     },
                     available_styles,
@@ -667,19 +797,24 @@ def render_blocks(
         else:
             apply_block(
                 current,
-                blocks[0],
+                first_block,
                 available_styles,
-                forced_style=paragraph_style_for_block(blocks[0]),
+                forced_style=first_forced_style
+                or paragraph_style_for_block(first_block),
             )
             used_last = current
         if first_kind == "heading":
-            last_heading_text = str(blocks[0].get("text", "")).strip()
-            in_reference_section = is_reference_section_title(last_heading_text)
+            last_heading_text = str(first_block.get("text", "")).strip()
+            in_reference_section = (
+                reference_output_enabled
+                and is_reference_section_title(last_heading_text)
+            )
     else:
         clear_paragraph(current)
         used_last = current
 
-    for block in blocks[1:]:
+    for block_index, block in enumerate(blocks[1:], start=1):
+        block, forced_style = normalized_block(block, block_index)
         if block.get("kind") == "code":
             used_last = insert_code_table_after(
                 used_last,
@@ -696,7 +831,9 @@ def render_blocks(
                 caption,
                 {
                     "kind": "paragraph",
-                    "text": make_caption("表", table_index, last_heading_text),
+                    "text": make_caption(
+                        "表", table_index, caption_label_from_heading(last_heading_text)
+                    ),
                 },
                 available_styles,
                 forced_style=table_caption_style_name(available_styles),
@@ -737,11 +874,14 @@ def render_blocks(
                 used_last,
                 block,
                 available_styles,
-                forced_style=paragraph_style_for_block(block),
+                forced_style=forced_style or paragraph_style_for_block(block),
             )
             if block.get("kind") == "heading":
                 last_heading_text = str(block.get("text", "")).strip()
-                in_reference_section = is_reference_section_title(last_heading_text)
+                in_reference_section = (
+                    reference_output_enabled
+                    and is_reference_section_title(last_heading_text)
+                )
 
     for paragraph in original_region[1:]:
         if paragraph._element.getparent() is not None:

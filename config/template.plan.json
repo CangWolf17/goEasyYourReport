@@ -89,6 +89,78 @@
     "user_profile": "./user/user.md",
     "writing_profile": "./user/soul.md"
   },
+  "semantics": {
+    "style_policy": {
+      "source_priority": [
+        "task_book",
+        "target_template",
+        "repo_default"
+      ],
+      "title_style": "题目",
+      "heading_styles": {
+        "1": "标题2",
+        "2": "标题3",
+        "3": "标题4"
+      },
+      "outline_levels": {
+        "标题2": 0,
+        "标题3": 1,
+        "标题4": 2
+      },
+      "body_style": "正文",
+      "figure_caption_style": "图题",
+      "table_caption_style": "表题",
+      "reference_style": "参考文献",
+      "list_styles": {
+        "ordered": "列表编号",
+        "unordered": "列表符号"
+      },
+      "table_defaults": {
+        "first_row_top_border": true,
+        "first_row_bottom_border": true,
+        "last_row_bottom_border": true,
+        "bold_first_column_when_row_header": true
+      }
+    },
+    "template_scan": {
+      "style_candidates": {},
+      "style_gaps": [],
+      "outline_semantics_complete": false,
+      "reference_block_present": false,
+      "toc_signal": {
+        "detected": false,
+        "kind": "none"
+      }
+    },
+    "toc": {
+      "detected": false,
+      "enabled": false,
+      "needs_confirmation": false,
+      "source": "none"
+    },
+    "cross_references": {
+      "mode": "postprocess",
+      "figure_table_enabled": "needs_confirmation",
+      "equation_enabled": true,
+      "bibliography_enabled": true,
+      "style_mode": "body_text"
+    },
+    "equations": {
+      "inline_enabled": true,
+      "block_numbering": "parenthesized_global",
+      "cross_reference_label": "公式({n})"
+    },
+    "bibliography": {
+      "source_mode": "needs_confirmation",
+      "output_block_present": false,
+      "evidence_file": "./logs/bibliography.sources.json",
+      "user_source_dir": "./docs/references"
+    },
+    "integrity": {
+      "enabled": true,
+      "last_result": null
+    }
+  },
   "status": {
     "template_scanned": true,
     "preview_confirmed": false,

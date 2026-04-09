@@ -8,6 +8,7 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts._docx_semantics import collect_template_semantics, ensure_plan_semantics
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
 
 
@@ -31,6 +32,7 @@ def is_field_candidate(text: str) -> bool:
 def analyze_docx(template_path: Path) -> dict[str, object]:
     docx = import_docx()
     doc = docx.Document(template_path)
+    semantic_scan = collect_template_semantics(doc)
     paragraphs = []
     heading_anchors = []
     field_candidates = []
@@ -116,6 +118,18 @@ def analyze_docx(template_path: Path) -> dict[str, object]:
             "locked": locked,
             "fillable": fillable,
         },
+        "styles": {
+            "available": semantic_scan["available_styles"],
+            "heading_candidates": semantic_scan["style_candidates"]["heading"],
+            "body_candidates": semantic_scan["style_candidates"]["body"],
+            "list_candidates": semantic_scan["style_candidates"]["list"],
+            "caption_candidates": semantic_scan["style_candidates"]["caption"],
+            "bibliography_candidates": semantic_scan["style_candidates"]["bibliography"],
+        },
+        "outline": semantic_scan["outline"],
+        "toc": semantic_scan["toc_signal"],
+        "reference_block": semantic_scan["reference_block"],
+        "semantics": semantic_scan,
     }
 
 
@@ -144,6 +158,7 @@ def main() -> int:
     scan = analyze_docx(template_path)
     regions = scan["regions"]
     anchors = scan["anchors"]
+    semantics_scan = scan["semantics"]
     paragraph_count = scan["paragraph_count"]
     first_heading_index = scan["first_heading_index"]
     if not isinstance(regions, dict):
@@ -155,6 +170,25 @@ def main() -> int:
     plan_anchors["headings"] = anchors.get("headings", [])
     plan_anchors["field_candidates"] = anchors.get("field_candidates", [])
     plan_anchors["region_candidates"] = anchors.get("region_candidates", [])
+    semantics = ensure_plan_semantics(plan)
+    template_scan = semantics.setdefault("template_scan", {})
+    template_scan["style_candidates"] = semantics_scan["style_candidates"]
+    template_scan["style_gaps"] = semantics_scan["style_gaps"]
+    template_scan["outline_semantics_complete"] = semantics_scan[
+        "outline_semantics_complete"
+    ]
+    template_scan["reference_block_present"] = semantics_scan["reference_block"][
+        "present"
+    ]
+    template_scan["toc_signal"] = semantics_scan["toc_signal"]
+    toc = semantics.setdefault("toc", {})
+    toc["detected"] = semantics_scan["toc_signal"]["detected"]
+    toc["kind"] = semantics_scan["toc_signal"]["kind"]
+    toc["needs_confirmation"] = semantics_scan["toc_signal"]["detected"]
+    toc.setdefault("enabled", False)
+    toc["source"] = "template_scan" if semantics_scan["toc_signal"]["detected"] else "none"
+    bibliography = semantics.setdefault("bibliography", {})
+    bibliography["output_block_present"] = semantics_scan["reference_block"]["present"]
     plan.setdefault("status", {})["template_scanned"] = True
     dump_json(plan_path, plan)
     dump_json(project_path(args.project_root, args.scan_output), scan)
@@ -166,6 +200,10 @@ def main() -> int:
             "anchors": anchors,
             "locked_regions": regions.get("locked", []),
             "fillable_regions": regions.get("fillable", []),
+            "styles": scan["styles"],
+            "outline": scan["outline"],
+            "toc": scan["toc"],
+            "reference_block": scan["reference_block"],
         }
     )
     return 0

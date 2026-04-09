@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
-import tempfile
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 import docx
 
@@ -35,6 +37,27 @@ class ConfirmationPackageTests(unittest.TestCase):
         self.assertIn("Permission is hereby granted, free of charge", license_text)
         self.assertIn("MIT License", license_text)
 
+    def test_repo_docs_describe_docx_integrity_gate_contract(self) -> None:
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text, readme_text):
+            self.assertIn("DOCX integrity gate", text)
+            self.assertIn("docx_integrity_error", text)
+            self.assertIn("before `verify` or `inject`", text)
+
+    def test_repo_docs_describe_semantic_style_workflow(self) -> None:
+        skill_text = (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text, readme_text):
+            self.assertIn("semantic template scan", text)
+            self.assertIn("style-gap confirmation", text)
+            self.assertIn("TOC / reference-block detection in preview", text)
+            self.assertIn("semantic style recommendation before build", text)
+
     def test_init_project_copies_code_theme_sample(self) -> None:
         project_root = self.create_project()
 
@@ -51,9 +74,11 @@ class ConfirmationPackageTests(unittest.TestCase):
         )
 
     def create_project(self) -> Path:
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        project_root = Path(temp_dir.name)
+        sandbox_root = PROJECT_ROOT / "temp" / "confirmation-package-tests"
+        sandbox_root.mkdir(parents=True, exist_ok=True)
+        project_root = sandbox_root / uuid.uuid4().hex
+        project_root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(project_root, ignore_errors=True))
         result = subprocess.run(
             [
                 str(PYTHON),
@@ -83,6 +108,35 @@ class ConfirmationPackageTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         return json.loads(result.stdout)
+
+    def run_workflow(
+        self, project_root: Path, action: str, *extra_args: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                str(PYTHON),
+                str(project_root / "scripts" / "workflow_agent.py"),
+                action,
+                "--project-root",
+                str(project_root),
+                *extra_args,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def assert_normalized_agent_payload(
+        self, payload: dict[str, object], action: str
+    ) -> None:
+        self.assertEqual(payload["action"], action)
+        self.assertIn("status", payload)
+        self.assertIn("summary", payload)
+        self.assertIn("artifacts", payload)
+        self.assertIn("issues", payload)
+        self.assertIn("warnings", payload)
+        self.assertIn("next_step", payload)
+        self.assertIsInstance(payload["issues"], list)
+        self.assertIsInstance(payload["warnings"], list)
 
     def test_scan_template_reports_heading_anchors_and_field_candidates(self) -> None:
         project_root = self.create_project()
@@ -142,6 +196,124 @@ class ConfirmationPackageTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["mode"], "preview")
         self.assertTrue(payload["ok"])
+
+    def test_workflow_agent_prepare_returns_normalized_json(self) -> None:
+        project_root = self.create_project()
+
+        result = self.run_workflow(project_root, "prepare")
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "prepare")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["issues"], [])
+        self.assertEqual(payload["warnings"], [])
+        self.assertTrue(payload["summary"])
+        self.assertTrue(payload["artifacts"])
+        self.assertTrue(payload["next_step"])
+
+    def test_workflow_agent_build_returns_ok_for_supported_code(self) -> None:
+        project_root = self.create_project()
+        (project_root / "docs" / "report_body.md").write_text(
+            "## Code Example\n\n```python\nprint('ok')\n```",
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "build")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["issues"], [])
+        self.assertEqual(payload["warnings"], [])
+        self.assertTrue(payload["summary"])
+        self.assertTrue(payload["artifacts"])
+        self.assertTrue(payload["next_step"])
+
+    def test_workflow_agent_build_surfaces_unsupported_code_language(self) -> None:
+        project_root = self.create_project()
+        (project_root / "docs" / "report_body.md").write_text(
+            '## Rust Example\n\n```rust\nfn main() {\n    println!("hi");\n}\n```',
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "build")
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertTrue(payload["issues"])
+        self.assertEqual(payload["issues"][0]["kind"], "unsupported_code_language")
+        self.assertEqual(payload["issues"][0]["language"], "rust")
+        self.assertTrue(payload["artifacts"])
+
+    def test_workflow_agent_build_surfaces_image_insertion_failure(self) -> None:
+        project_root = self.create_project()
+        (project_root / "docs" / "report_body.md").write_text(
+            "## Figures\n\n![Missing](images/missing.png)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "build")
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertTrue(payload["issues"])
+        self.assertEqual(payload["issues"][0]["kind"], "image_insert_failed")
+        self.assertEqual(payload["issues"][0]["path"], "images/missing.png")
+        self.assertTrue(payload["artifacts"])
+
+    def test_workflow_agent_build_surfaces_docx_integrity_error(self) -> None:
+        from scripts import workflow_agent
+
+        project_root = self.create_project()
+        build_payload = {
+            "redacted": str(project_root / "out" / "redacted.docx"),
+            "integrity": {
+                "ok": False,
+                "errors": [
+                    {
+                        "kind": "missing_relationship_target",
+                        "source": "word/_rels/document.xml.rels",
+                        "target": "media/image9.png",
+                    }
+                ],
+            },
+            "images": {"inserted": [], "failed": []},
+            "code_blocks": {"unsupported": [], "warnings": []},
+        }
+        script_result = {
+            "returncode": 2,
+            "stdout": json.dumps(build_payload),
+            "stderr": "",
+            "json": build_payload,
+            "json_error": None,
+        }
+
+        with mock.patch(
+            "scripts.workflow_agent.run_repo_script",
+            return_value=script_result,
+        ):
+            exit_code, payload = workflow_agent.handle_build(project_root)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["issues"][0]["kind"], "docx_integrity_error")
+        self.assertEqual(payload["issues"][0]["details"], build_payload["integrity"]["errors"])
+
+    def test_workflow_agent_preview_surfaces_semantic_confirmation(self) -> None:
+        project_root = self.create_project()
+        result = self.run_workflow(project_root, "preview")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assert_normalized_agent_payload(payload, "preview")
+        self.assertEqual(payload["status"], "needs_user_confirmation")
+        self.assertEqual(payload["next_step"], "review_preview_summary")
 
 
 if __name__ == "__main__":

@@ -8,28 +8,13 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts._docx_xml import (
+    clear_paragraph,
+    insert_paragraph_after,
+    insert_paragraph_before,
+)
+from scripts._docx_semantics import ensure_plan_semantics
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
-
-
-def clear_paragraph(paragraph) -> None:
-    for child in list(paragraph._element):
-        paragraph._element.remove(child)
-
-
-def insert_paragraph_before(paragraph):
-    paragraph_module = __import__("docx.text.paragraph", fromlist=["Paragraph"])
-    xml_module = __import__("docx.oxml", fromlist=["OxmlElement"])
-    new_p = xml_module.OxmlElement("w:p")
-    paragraph._p.addprevious(new_p)
-    return paragraph_module.Paragraph(new_p, paragraph._parent)
-
-
-def insert_paragraph_after(paragraph):
-    paragraph_module = __import__("docx.text.paragraph", fromlist=["Paragraph"])
-    xml_module = __import__("docx.oxml", fromlist=["OxmlElement"])
-    new_p = xml_module.OxmlElement("w:p")
-    paragraph._p.addnext(new_p)
-    return paragraph_module.Paragraph(new_p, paragraph._parent)
 
 
 def normalize_repo_relative(path_text: str) -> str:
@@ -44,6 +29,7 @@ def build_summary(
     binding: dict[str, object],
     summary_relative: str,
     preview_relative: str,
+    template_recommendation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     anchors = plan.get("anchors", {})
     if not isinstance(anchors, dict):
@@ -55,6 +41,16 @@ def build_summary(
         bindings = []
     if not isinstance(availability, dict):
         availability = {}
+    semantics = ensure_plan_semantics(plan)
+    template_scan = semantics.get("template_scan", {})
+    style_candidates = template_scan.get("style_candidates", {})
+    style_gaps = template_scan.get("style_gaps", [])
+    outline_complete = bool(template_scan.get("outline_semantics_complete", False))
+    toc = semantics.get("toc", {})
+    reference_block = {
+        "present": bool(template_scan.get("reference_block_present", False))
+    }
+    cross_references = semantics.get("cross_references", {})
 
     needs_confirmation = []
     if not plan.get("regions", {}).get("fillable", []):
@@ -63,6 +59,18 @@ def build_summary(
         needs_confirmation.append("no field candidates detected")
     if not bindings:
         needs_confirmation.append("no field bindings configured")
+    if template_recommendation and template_recommendation.get("pending_acceptance"):
+        needs_confirmation.append("template style recommendation pending")
+    if not outline_complete:
+        needs_confirmation.append("template outline semantics incomplete")
+    if any(gap in {"列表编号", "列表符号"} for gap in style_gaps):
+        needs_confirmation.append("list style semantics unresolved")
+    if toc.get("detected") and toc.get("needs_confirmation", False):
+        needs_confirmation.append("toc detected; confirm whether to enable")
+    if cross_references.get("figure_table_enabled") == "needs_confirmation":
+        needs_confirmation.append(
+            "confirm whether to insert figure/table cross references"
+        )
 
     return {
         "version": "1.0",
@@ -76,6 +84,24 @@ def build_summary(
             "bindings": bindings,
             "availability": availability,
         },
+        "semantics": {
+            "style_candidates": style_candidates,
+            "style_gaps": style_gaps,
+            "outline_semantics_complete": outline_complete,
+            "toc": {
+                "detected": bool(toc.get("detected", False)),
+                "kind": toc.get("kind", "none"),
+                "enabled": bool(toc.get("enabled", False)),
+                "needs_confirmation": bool(toc.get("needs_confirmation", False)),
+            },
+            "reference_block": reference_block,
+            "cross_references": {
+                "figure_table_enabled": cross_references.get(
+                    "figure_table_enabled", "needs_confirmation"
+                )
+            },
+        },
+        "template_recommendation": template_recommendation or {},
         "review": {
             "warnings": [],
             "needs_confirmation": needs_confirmation,
@@ -109,6 +135,12 @@ def main() -> int:
         raise SystemExit(f"Field binding not found: {binding_path}")
 
     binding = load_json(binding_path)
+    recommendation_path = project_path(
+        args.project_root, "logs/template_style_recommendation.json"
+    )
+    template_recommendation = (
+        load_json(recommendation_path) if recommendation_path.exists() else None
+    )
 
     shutil.copy2(template_path, preview_path)
     docx = import_docx()
@@ -148,7 +180,13 @@ def main() -> int:
 
     preview_relative = normalize_repo_relative(str(plan["selection"]["preview_output"]))
     summary_relative = preview_relative.removesuffix(".docx") + ".summary.json"
-    summary = build_summary(plan, binding, summary_relative, preview_relative)
+    summary = build_summary(
+        plan,
+        binding,
+        summary_relative,
+        preview_relative,
+        template_recommendation,
+    )
     dump_json(summary_path, summary)
     emit_json({"preview": str(preview_path), "summary": str(summary_path)})
     return 0
