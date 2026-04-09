@@ -274,17 +274,17 @@ def convert_inline_picture_to_top_bottom_anchor(run) -> None:
         anchor.set(key, value)
 
     simple_pos = xml_module.OxmlElement("wp:simplePos")
-    simple_pos.set(ns_module.qn("wp:x"), "0")
-    simple_pos.set(ns_module.qn("wp:y"), "0")
+    simple_pos.set("x", "0")
+    simple_pos.set("y", "0")
 
     position_h = xml_module.OxmlElement("wp:positionH")
-    position_h.set(ns_module.qn("wp:relativeFrom"), "margin")
+    position_h.set("relativeFrom", "margin")
     align_h = xml_module.OxmlElement("wp:align")
     align_h.text = "center"
     position_h.append(align_h)
 
     position_v = xml_module.OxmlElement("wp:positionV")
-    position_v.set(ns_module.qn("wp:relativeFrom"), "paragraph")
+    position_v.set("relativeFrom", "paragraph")
     pos_offset = xml_module.OxmlElement("wp:posOffset")
     pos_offset.text = "0"
     position_v.append(pos_offset)

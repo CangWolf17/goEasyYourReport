@@ -10,6 +10,7 @@ from pathlib import Path
 import docx
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -912,6 +913,13 @@ class InitProjectTests(unittest.TestCase):
             image_paragraph = redacted_doc.paragraphs[image_indexes[0]]
             self.assertEqual(image_paragraph.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertIn("wrapTopAndBottom", image_paragraph._p.xml)
+            simple_pos = image_paragraph._p.findall(".//" + qn("wp:simplePos"))[0]
+            position_h = image_paragraph._p.findall(".//" + qn("wp:positionH"))[0]
+            position_v = image_paragraph._p.findall(".//" + qn("wp:positionV"))[0]
+
+            self.assertEqual(simple_pos.attrib, {"x": "0", "y": "0"})
+            self.assertEqual(position_h.attrib, {"relativeFrom": "margin"})
+            self.assertEqual(position_v.attrib, {"relativeFrom": "paragraph"})
 
             caption_paragraph = redacted_doc.paragraphs[image_indexes[0] + 1]
             self.assertEqual(caption_paragraph.style.name, "图题")
