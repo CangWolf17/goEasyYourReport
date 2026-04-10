@@ -1,108 +1,77 @@
-# Report Agent Framework Skill
+---
+name: go-easy-your-report
+description: Use when an agent needs to initialize or run the goEasyYourReport workspace to build a DOCX report from templates, Markdown body content, and report.task.yaml decisions.
+---
 
-## Purpose
-Use `scripts/workflow_agent.py` as the normal agent-facing entrypoint for this agent-driven report framework. Agents provide high-level materials and decisions; the framework handles preview/build/verify, private injection, and cleanup. Lower-level scripts remain implementation details unless you are debugging a single stage.
+# goEasyYourReport
+
+## Overview
+Use `scripts/workflow_agent.py` as the normal entrypoint for this agent-driven report framework. The framework owns preview/build/verify/inject orchestration; the agent should focus on collecting requirements, updating `report.task.yaml`, and deciding when to stop for confirmation.
+
+## When to Use
+- 用户要在工作目录里完成报告写作、排版、脱敏构建与私密注入
+- 你需要读取模板、正文、材料包并输出 `preview` / `redacted` / `private`
+- 你希望通过 `report.task.yaml` 持久化任务状态，而不是只靠会话上下文
+
+不要在这些情况下使用它：
+- 只想调试某个底层脚本的单点行为
+- 只想做一次性的 DOCX 文本替换
 
 ## Read First
 - `report.task.yaml`
 - `workflow.json`
 - `INSTALL.md`
 - `GUARDRAILS.md`
-- `user/user.md`
-- `user/soul.md`
-- `config/template.plan.json`
-- `config/field.binding.json`
 
-## Workspace Contract
-- `report.task.yaml` is the durable workspace entrypoint and handoff file.
-- Agents should update high-level task state and decisions there instead of keeping critical workflow state only in chat.
-- The default template is a protected baseline; express structure decisions through task state rather than rewriting the default template.
-- `build` is allowed only after the task is `ready_to_write`.
+## Agent 可控项
+- 可以修改 `report.task.yaml` 中的任务阶段、输入路径和高层决策
+- 可以更新 `docs/task_requirements.md`、`docs/document_requirements.md`、`docs/report_body.md`
+- 可以补充模板外材料，例如参考文献、图片、证据包
+- 可以基于确认结果推进 `prepare`、`preview`、`build`、`verify`、`inject`
 
-## Façade Contract
-Run the workflow with:
+不要这样做：
+- 不要删除框架渲染部件来定制功能
+- 不要把 `default template` 当作普通输出文件静默改写
+- 不要读取私密字段值或重新打开 `out/private.docx`
+
+## Workflow
+1. 先读 `report.task.yaml` 和工作区输入。
+2. 补充或修正高层决策与正文材料。
+3. 运行 `prepare`，必要时再运行 `preview`。
+4. 解决确认项后再推进到 `ready_to_write`。
+5. 运行 `build`、`verify`、`inject`。
 
 ```powershell
-uv run python scripts\workflow_agent.py <action> --project-root .
+uv run python scripts\workflow_agent.py prepare --project-root .
+uv run python scripts\workflow_agent.py build --project-root .
+uv run python scripts\workflow_agent.py verify --project-root . --target redacted
 ```
 
-Stable actions:
-- `prepare`: initialize or refresh the workspace, run the semantic template scan, inspect private-field availability, and build the preview confirmation package.
-- `preview`: rebuild the preview confirmation package with style-gap confirmation and TOC / reference-block detection in preview.
-- `build`: generate `out/redacted.docx`, run a DOCX integrity gate, and report structured code/image issues.
-- `verify`: verify a DOCX against the current plan.
-- `inject`: create `out/private.docx` from a confirmed redacted build and private source.
-- `cleanup`: remove only recyclable artifacts.
+## Required Contracts
+- `report.task.yaml` is the durable entrypoint and handoff file.
+- `Build blocked until report.task.yaml marks the task as ready_to_write.`
+- `build` includes a `DOCX integrity gate`; if it fails, expect `docx_integrity_error` and stop before `verify` or `inject`.
+- `prepare` / `preview` surface `semantic template scan`, `style-gap confirmation`, `TOC / reference-block detection in preview`, and `semantic style recommendation before build`.
+- `TOC is inserted only when detected and confirmed`.
+- `figure / table cross-references are a post-processing step`.
+- `cross-reference insertion requires user confirmation`.
+- `supported equation syntax` is intentionally limited.
+- `inline equations render inline, block equations are numbered and cross-referenceable`.
+- `bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files`.
+- `no reference block in task/template means source-only, not output`.
 
-Top-level JSON contract:
-- `action`
-- `status`
-- `summary`
-- `artifacts`
-- `issues`
-- `warnings`
-- `next_step`
+## Ask The User When
+- 模板结构或字段绑定含义不明确
+- TOC、图表交叉引用、参考文献来源模式尚未确认
+- 材料不足以推进到 `ready_to_write`
+- 私密字段来源不足以安全注入
 
-Expected `status` values:
-- `ok`
-- `needs_user_confirmation`
-- `needs_agent_handoff`
-- `error`
-
-Return codes:
-- `0`: success, no handoff needed.
-- `1`: the action completed but the agent must stop for user confirmation or another handoff.
-- `2`: the action failed and must be fixed before retrying.
-
-## Ready-To-Write Contract
-- `report.task.yaml` owns the `ready_to_write` gate.
-- Build blocked until the report task is `ready_to_write`.
-- Agents should finish material collection and unresolved confirmations before attempting formal report generation.
-
-## DOCX Integrity Contract
-- `build` success now requires the saved `out/redacted.docx` to pass the repo-owned DOCX integrity gate.
-- If the integrity gate fails, the façade returns `status=error` with `kind=docx_integrity_error`.
-- Treat `docx_integrity_error` as blocking and stop before `verify` or `inject`.
-- Integrity failures are not soft handoffs; fix the DOCX package first, then rerun `build`.
-
-## Semantic Style Contract
-- `prepare` and `preview` now include a semantic template scan over style candidates, outline metadata, and semantic block signals.
-- Treat style-gap confirmation as a real review gate; do not silently decide missing list semantics or outline semantics in code.
-- The preview package must surface TOC / reference-block detection in preview rather than auto-inserting those blocks.
-- If a semantic style recommendation is pending, handle that semantic style recommendation before build instead of assuming repo defaults should override the template.
-- TOC is inserted only when detected and confirmed; if template scan finds a TOC signal and confirmation is unresolved, stop at preview/build and review `out/preview.summary.json`.
-- figure / table cross-references are a post-processing step over explicit `[[REF:figure:...]]` and `[[REF:table:...]]` placeholders, not a first-pass inline text rewrite.
-- cross-reference insertion requires user confirmation before build; do not silently enable figure/table reference insertion on behalf of the user.
-- supported equation syntax in v1 is the in-repo subset: letters, digits, parentheses, `+ - * / =`, superscripts, subscripts, `\frac{...}{...}`, `\sqrt{...}`, and common Greek letters such as `\alpha`.
-- inline equations render inline, block equations are numbered and cross-referenceable.
-- bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files.
-- no reference block in task/template means source-only, not output.
-
-## Code Rendering Contract
-- Supported fenced code languages are `python`, `json`, `bash`, `yaml`, `sql`, `javascript`, `typescript`, `c`, `cpp`, and `java`.
-- Common aliases are normalized before rendering: `py`, `sh`, `shell`, `yml`, `js`, `ts`, `c++`, `cc`, and `cxx`.
-- Supported languages may render with syntax highlighting.
-- Plain fenced code blocks render as styled code blocks without language-specific highlighting.
-- Unsupported fenced languages must still render as readable styled code blocks in `out/redacted.docx`.
-- Unsupported fenced languages must also surface a machine-readable issue with `kind=unsupported_code_language`.
-- Failed image insertions must surface `kind=image_insert_failed`.
-- If `build` returns `1`, stop before `inject` and ask the user whether to accept the fallback or add support with tests.
-- Treat both `unsupported_code_language` and `image_insert_failed` as blocking handoff issues before `inject`.
-
-## Lower-Level Scripts
-Use direct scripts only when you need to debug one stage, probe a specific behavior, or the façade is unavailable.
+## Lower-Level Escape Hatches
+Only use these for stage-level debugging:
 - `scripts/init_project.py`
-- `scripts/list_private_fields.py` - only agent-safe way to inspect private-field names and availability
+- `scripts/list_private_fields.py`
 - `scripts/scan_template.py`
 - `scripts/build_preview.py`
 - `scripts/build_report.py`
 - `scripts/verify_report.py`
 - `scripts/inject_private_fields.py`
-- `scripts/cleanup_project.py`
-
-## Guardrails
-- Do not read or reopen `out/private.docx`.
-- Do not overwrite user templates silently.
-- Do not rewrite the default template as part of normal agent execution.
-- Do not treat preview generation as completion.
-- Do not inject private values until the build handoff is cleared.

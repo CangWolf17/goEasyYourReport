@@ -1,115 +1,58 @@
 # goEasyYourReport
 
-Agent-driven report framework for building reviewable DOCX reports from high-level task inputs, a protected template baseline, Markdown body content, and private field bindings.
+`goEasyYourReport` 是一个面向中文场景的 agent-driven DOCX 报告框架。它把模板扫描、`preview` 确认、正文渲染、脱敏构建、私密注入和验证收敛到同一个工作区里，适合让 agent 在一次任务内完成“收集需求 -> 写作/排版 -> 产出报告”。
 
-## What This Repo Does
+## 你会得到什么
+- 用 `report.task.yaml` 管理任务状态、输入材料路径和高层决策
+- 用 `scripts/workflow_agent.py` 作为唯一稳定入口
+- 用 `prepare -> preview -> build -> verify -> inject` 跑完整生命周期
+- 底层渲染仍由 `scripts/build_report.py`、`scripts/build_preview.py` 等脚本完成，但正常使用不需要直接调用
 
-- uses `report.task.yaml` as the workspace entrypoint for task state, handoff, and runtime pointers
-- scans a DOCX template into locked and fillable regions
-- runs a semantic template scan, then builds `preview.docx` plus `preview.summary.json` for confirmation
-- builds `redacted.docx` from `docs/report_body.md`
-- injects private fields into `out/private.docx`
-- verifies locked-region preservation before private output
-
-Current Markdown support includes:
-- headings and paragraphs
-- styled code blocks with a light printable theme
-- syntax highlighting for `python`, `json`, `bash`, `yaml`, `sql`, `javascript`, `typescript`, `c`, `cpp`, and `java`
-- alias normalization for `py`, `sh`, `shell`, `yml`, `js`, `ts`, `c++`, `cc`, and `cxx`
-- lists
-- simple pipe tables
-- image insertion with failure reporting
-
-## Setup
-
-This repo uses `uv` for environment management.
+## 快速开始
+先安装依赖：
 
 ```powershell
 uv sync
 ```
 
-## Workspace Contract
-
-Agents should treat this repo as an agent-driven framework workspace, not as a loose workflow bundle.
-
-- `report.task.yaml` is the primary task book and handoff file.
-- `workflow.json` remains the stable framework runtime contract.
-- The default template is protected. Agents should express high-level decisions through `report.task.yaml` instead of rewriting the default template.
-- `task.ready_to_write` is the formal gate for report generation.
-
-## Agent Entry Point
-
-Use `scripts/workflow_agent.py` for normal agent work. It is the stable façade over the lower-level workflow scripts.
-
-Stable actions:
-- `prepare` refreshes the workspace, runs the semantic template scan, inspects private fields, and rebuilds the preview package.
-- `preview` rebuilds preview artifacts for confirmation, including style-gap confirmation and TOC / reference-block detection in preview.
-- `build` generates `out/redacted.docx`, runs a DOCX integrity gate, and emits structured code/image issues.
-- `verify` checks a DOCX against the current plan.
-- `inject` creates `out/private.docx` from confirmed private data.
-- `cleanup` removes only recyclable artifacts.
-
-The façade prints JSON with `action`, `status`, `summary`, `artifacts`, `issues`, `warnings`, and `next_step`.
-
-Return codes:
-- `0` means success and you can continue.
-- `1` means the action finished but the agent must stop for user confirmation or another handoff.
-- `2` means the action failed and needs troubleshooting.
-
-Build success now requires a valid DOCX package. If the DOCX integrity gate fails, the façade returns `kind=docx_integrity_error` and the agent must stop before `verify` or `inject`.
-
-Build blocked until report task is `ready_to_write`.
-
-Before build, the workflow may also stop for semantic style recommendation before build if the template is missing required semantic styles or outline metadata.
-
-Run it with:
+然后在工作区初始化或刷新：
 
 ```powershell
 uv run python scripts\workflow_agent.py prepare --project-root .
-uv run python scripts\workflow_agent.py build --project-root .
-uv run python scripts\workflow_agent.py verify --project-root . --target redacted
 ```
 
-Inject private fields only after `build` and `verify` both succeed without handoff:
+最短使用路径：
 
 ```powershell
+uv run python scripts\workflow_agent.py preview --project-root .
+uv run python scripts\workflow_agent.py build --project-root .
+uv run python scripts\workflow_agent.py verify --project-root . --target redacted
 uv run python scripts\workflow_agent.py inject --project-root . --source temp\private-fields.sample.json
 ```
 
-## Important Behavior
+## 关键约束
+- `report.task.yaml` 是工作区入口；`ready_to_write` 是正式写作门。
+- `Build blocked until report.task.yaml marks the task as ready_to_write.`
+- 默认模板是 `default template` 基线，agent 不应静默重写。
+- `build` 带有 `DOCX integrity gate`；如果失败会返回 `docx_integrity_error`，必须停在 before `verify` or `inject`。
+- `prepare` / `preview` 会暴露 `semantic template scan`、`style-gap confirmation`、`TOC / reference-block detection in preview` 和 `semantic style recommendation before build`。
+- `TOC is inserted only when detected and confirmed`。
+- `figure / table cross-references are a post-processing step`，并且 `cross-reference insertion requires user confirmation`。
+- `supported equation syntax` 目前是受限子集；`inline equations render inline, block equations are numbered and cross-referenceable`。
+- `bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files`。
+- `no reference block in task/template means source-only, not output`。
 
-- `report.task.yaml` is the durable agent handoff contract.
-- Build blocked until `report.task.yaml` marks the task as `ready_to_write`.
-- The default template is a protected baseline; adjust high-level report decisions before touching template assets.
-- `preview.docx` is for confirmation, not final delivery.
-- `build` does not count as successful unless `out/redacted.docx` passes the repo-owned DOCX integrity gate.
-- `docx_integrity_error` is a blocking error, not a soft handoff; fix it before `verify` or `inject`.
-- The preview package includes a semantic template scan, style-gap confirmation, and TOC / reference-block detection in preview.
-- TOC is inserted only when detected and confirmed. If template scan finds a TOC placeholder or field and confirmation is unresolved, review `out/preview.summary.json` before running through build.
-- figure / table cross-references are a post-processing step driven by explicit placeholders such as `[[REF:figure:fig_0001]]`, `[[REF:figure:fig_0001|见下图]]`, `[[REF:table:tbl_0001]]`, and `[[REF:table:tbl_0001|见上表]]`.
-- cross-reference insertion requires user confirmation; the repo will not silently turn on figure/table reference replacement just because placeholders are present.
-- supported equation syntax in v1 is limited to letters, digits, parentheses, `+ - * / =`, superscripts, subscripts, `\frac{...}{...}`, `\sqrt{...}`, and common Greek letters such as `\alpha`.
-- inline equations render inline, block equations are numbered and cross-referenceable.
-- bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files.
-- no reference block in task/template means source-only, not output.
-- Repo defaults apply only when the task book and the selected template do not already specify the semantic style choice.
-- Unsupported fenced code languages still render as styled fallback blocks, but they are reported as `kind=unsupported_code_language` and require handoff before private injection.
-- Image insertion failures are surfaced as `kind=image_insert_failed` and also require handoff before private injection.
-- Do not read `out/private.docx` in agent automation flows.
-- The façade is the normal agent entrypoint; the lower-level scripts remain implementation details.
+## 文档分工
+- [INSTALL.md](/F:/Codes/Skills/goEasyYourReport/INSTALL.md)：完整安装、初始化、配置契约、工作区结构
+- [SKILL.md](/F:/Codes/Skills/goEasyYourReport/SKILL.md)：面向 agent 的标准 skill 说明和高频 `Agent 可控项`
+- [AGENTS.md](/F:/Codes/Skills/goEasyYourReport/AGENTS.md)：短路由和硬约束
 
-## Lower-Level Scripts
-
-Use direct scripts only when you are debugging a single stage or intentionally reproducing a lower-level issue:
-- `scripts/init_project.py`
-- `scripts/list_private_fields.py`
-- `scripts/scan_template.py`
-- `scripts/build_preview.py`
-- `scripts/build_report.py`
-- `scripts/verify_report.py`
-- `scripts/inject_private_fields.py`
-- `scripts/cleanup_project.py`
+## 适用输入
+- 模板 / 任务书 / 格式要求
+- 参考文献、图片、相关材料
+- `docs/report_body.md` 中的正文语料
+- `report.task.yaml` 中的任务决策与运行时状态
 
 ## License
 
-MIT. See `LICENSE`.
+MIT。见 `LICENSE`。
