@@ -73,23 +73,66 @@ def sync_preview_summary(project_root: Path, task_contract: dict[str, object]) -
     dump_json(summary_path, summary_payload)
 
 
+def persist_task_contract(
+    project_root: Path,
+    *,
+    stage: str | None = None,
+    ready_to_write: bool | None = None,
+    needs_user_input: bool | None = None,
+    next_step: str | None = None,
+    runtime_updates: dict[str, object] | None = None,
+    sync_summary: bool = False,
+) -> dict[str, object]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    task = task_contract.setdefault("task", {})
+    runtime = task_contract.setdefault("runtime", {})
+
+    if stage is not None:
+        task["stage"] = stage
+    if ready_to_write is not None:
+        task["ready_to_write"] = ready_to_write
+    if needs_user_input is not None:
+        task["needs_user_input"] = needs_user_input
+    if runtime_updates:
+        runtime.update(runtime_updates)
+    if next_step is not None:
+        runtime["next_step"] = next_step
+
+    dump_task_contract(task_contract_path(project_root), task_contract)
+    if sync_summary:
+        sync_preview_summary(project_root, task_contract)
+    return task_contract
+
+
 def sync_prepare_task_contract(
     project_root: Path, warnings: list[object]
 ) -> dict[str, object]:
     task_contract = load_task_contract(task_contract_path(project_root))
-    task_contract["task"]["stage"] = (
-        "awaiting_confirmation" if warnings else "ready_to_build"
+    ready_to_write = bool(task_contract.get("task", {}).get("ready_to_write", False))
+    if warnings:
+        stage = "awaiting_confirmation"
+        needs_user_input = True
+        next_step = "review_preview_summary"
+    elif ready_to_write:
+        stage = "ready_to_build"
+        needs_user_input = False
+        next_step = "build"
+    else:
+        stage = "collecting_materials"
+        needs_user_input = True
+        next_step = "resolve_report_task_gate"
+    return persist_task_contract(
+        project_root,
+        stage=stage,
+        needs_user_input=needs_user_input,
+        next_step=next_step,
+        runtime_updates={
+            "preview_output": "./out/preview.docx",
+            "template_plan": "./config/template.plan.json",
+            "field_binding": "./config/field.binding.json",
+        },
+        sync_summary=True,
     )
-    task_contract["task"]["needs_user_input"] = bool(warnings)
-    task_contract["runtime"]["preview_output"] = "./out/preview.docx"
-    task_contract["runtime"]["template_plan"] = "./config/template.plan.json"
-    task_contract["runtime"]["field_binding"] = "./config/field.binding.json"
-    task_contract["runtime"]["next_step"] = (
-        "review_preview_summary" if warnings else "build"
-    )
-    dump_task_contract(task_contract_path(project_root), task_contract)
-    sync_preview_summary(project_root, task_contract)
-    return task_contract
 
 
 def run_repo_script(
@@ -215,7 +258,7 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     summary_payload = load_json(summary_path) if summary_path.exists() else {}
     review = summary_payload.get("review", {})
     warnings = review.get("needs_confirmation", []) if isinstance(review, dict) else []
-    sync_prepare_task_contract(project_root, warnings)
+    task_contract = sync_prepare_task_contract(project_root, warnings)
     payload = response(
         "prepare",
         "ok",
@@ -227,7 +270,7 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
             "private_fields": fields_result["json"],
         },
         warnings=warnings,
-        next_step="preview",
+        next_step=str(task_contract["runtime"]["next_step"]),
     )
     return 0, payload
 
@@ -256,6 +299,7 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
         review.get("needs_confirmation", []) if isinstance(review, dict) else []
     )
     if verify_result["returncode"] == 0 and not needs_confirmation:
+        task_contract = sync_prepare_task_contract(project_root, [])
         return 0, response(
             "preview",
             "ok",
@@ -265,10 +309,11 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                 "preview_summary": "./out/preview.summary.json",
             },
             warnings=warnings,
-            next_step="build",
+            next_step=str(task_contract["runtime"]["next_step"]),
         )
 
     if verify_result["returncode"] == 0:
+        task_contract = sync_prepare_task_contract(project_root, needs_confirmation)
         return 1, response(
             "preview",
             "needs_user_confirmation",
@@ -278,10 +323,22 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                 "preview_summary": "./out/preview.summary.json",
             },
             warnings=warnings,
-            next_step="review_preview_summary",
+            next_step=str(task_contract["runtime"]["next_step"]),
         )
 
     issues = verify_issue_list(verify_result["json"])
+    task_contract = persist_task_contract(
+        project_root,
+        stage="collecting_materials",
+        needs_user_input=False,
+        next_step="fix_preview_verification",
+        runtime_updates={
+            "preview_output": "./out/preview.docx",
+            "template_plan": "./config/template.plan.json",
+            "field_binding": "./config/field.binding.json",
+        },
+        sync_summary=True,
+    )
     return 1, response(
         "preview",
         "needs_agent_handoff",
@@ -292,7 +349,7 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
         },
         issues=issues,
         warnings=warnings,
-        next_step="fix_preview_verification",
+        next_step=str(task_contract["runtime"]["next_step"]),
     )
 
 
@@ -300,9 +357,13 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
     task_contract = load_task_contract(task_contract_path(project_root))
     task = task_contract.get("task", {})
     if not bool(task.get("ready_to_write", False)):
-        task_contract["task"]["needs_user_input"] = True
-        task_contract["runtime"]["next_step"] = "resolve_report_task_gate"
-        dump_task_contract(task_contract_path(project_root), task_contract)
+        task_contract = persist_task_contract(
+            project_root,
+            stage="collecting_materials",
+            needs_user_input=True,
+            next_step="resolve_report_task_gate",
+            sync_summary=True,
+        )
         return 1, response(
             "build",
             "needs_user_confirmation",
@@ -313,7 +374,7 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
                     "details": "report.task.yaml indicates materials or confirmations are incomplete",
                 }
             ],
-            next_step="resolve_report_task_gate",
+            next_step=str(task_contract["runtime"]["next_step"]),
         )
 
     plan_path = project_path(project_root, "config/template.plan.json")
@@ -327,6 +388,13 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
             preview_result = run_repo_script("build_preview.py", project_root)
             if preview_result["returncode"] != 0:
                 return error_from_script("build", "build_preview.py", preview_result)
+            summary_path = project_path(project_root, "out/preview.summary.json")
+            summary_payload = load_json(summary_path) if summary_path.exists() else {}
+            review = summary_payload.get("review", {})
+            needs_confirmation = (
+                review.get("needs_confirmation", []) if isinstance(review, dict) else []
+            )
+            task_contract = sync_prepare_task_contract(project_root, needs_confirmation)
             return 1, response(
                 "build",
                 "needs_user_confirmation",
@@ -335,7 +403,7 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
                     "preview": "./out/preview.docx",
                     "preview_summary": "./out/preview.summary.json",
                 },
-                next_step="review_preview_summary",
+                next_step=str(task_contract["runtime"]["next_step"]),
             )
 
     result = run_repo_script("build_report.py", project_root)
@@ -381,10 +449,14 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
     if result["returncode"] != 0:
         return error_from_script("build", "build_report.py", result)
 
-    task_contract["task"]["stage"] = "redacted_built"
-    task_contract["runtime"]["redacted_output"] = "./out/redacted.docx"
-    task_contract["runtime"]["next_step"] = "verify"
-    dump_task_contract(task_contract_path(project_root), task_contract)
+    task_contract = persist_task_contract(
+        project_root,
+        stage="redacted_built",
+        needs_user_input=False,
+        next_step="verify",
+        runtime_updates={"redacted_output": "./out/redacted.docx"},
+        sync_summary=True,
+    )
 
     return 0, response(
         "build",
@@ -392,7 +464,7 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
         "Redacted build completed successfully",
         artifacts=artifacts,
         warnings=warnings,
-        next_step="verify",
+        next_step=str(task_contract["runtime"]["next_step"]),
     )
 
 

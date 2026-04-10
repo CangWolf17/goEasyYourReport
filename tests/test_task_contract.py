@@ -121,6 +121,19 @@ class TaskContractTests(unittest.TestCase):
         self.assert_task_contract_shape(loaded)
         self.assertEqual(loaded["task"]["name"], "示例任务")
 
+    def test_sync_prepare_task_contract_does_not_announce_build_before_ready(self) -> None:
+        from scripts._task_contract import default_task_contract, dump_task_contract
+        from scripts.workflow_agent import sync_prepare_task_contract
+
+        project_root = self.create_project()
+        dump_task_contract(project_root / "report.task.yaml", default_task_contract())
+
+        task_contract = sync_prepare_task_contract(project_root, [])
+
+        self.assertFalse(task_contract["task"]["ready_to_write"])
+        self.assertTrue(task_contract["task"]["needs_user_input"])
+        self.assertEqual(task_contract["runtime"]["next_step"], "resolve_report_task_gate")
+
     def test_workflow_agent_prepare_updates_report_task_runtime(self) -> None:
         project_root = self.create_project()
 
@@ -138,7 +151,11 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(runtime["preview_output"], "./out/preview.docx")
         self.assertEqual(runtime["template_plan"], "./config/template.plan.json")
         self.assertEqual(runtime["field_binding"], "./config/field.binding.json")
-        self.assertIn(runtime["next_step"], {"review_preview_summary", "build"})
+        self.assertEqual(payload["next_step"], runtime["next_step"])
+
+        summary = self.load_preview_summary(project_root)
+        self.assertEqual(summary["task_contract"]["next_step"], runtime["next_step"])
+        self.assertEqual(summary["task_contract"]["stage"], task_contract["task"]["stage"])
 
     def test_workflow_agent_build_blocks_when_report_task_not_ready(self) -> None:
         project_root = self.create_project()
@@ -206,6 +223,27 @@ class TaskContractTests(unittest.TestCase):
         self.assertIsNone(summary["report_decisions"]["toc_enabled"])
         self.assertTrue(
             summary["report_decisions"]["default_template_protected"]
+        )
+
+    def test_workflow_agent_preview_updates_task_contract_runtime_and_summary(self) -> None:
+        project_root = self.create_project()
+
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        result = self.run_workflow(project_root, "preview")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        task_contract = self.load_task_yaml(project_root)
+        summary = self.load_preview_summary(project_root)
+
+        self.assertEqual(payload["next_step"], task_contract["runtime"]["next_step"])
+        self.assertEqual(summary["task_contract"]["next_step"], payload["next_step"])
+        self.assertEqual(summary["task_contract"]["stage"], task_contract["task"]["stage"])
+        self.assertEqual(
+            summary["task_contract"]["ready_to_write"],
+            task_contract["task"]["ready_to_write"],
         )
 
 
