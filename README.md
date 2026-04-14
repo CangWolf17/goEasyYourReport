@@ -9,7 +9,11 @@
 - 底层渲染仍由 `scripts/build_report.py`、`scripts/build_preview.py` 等脚本完成，但正常使用不需要直接调用
 
 ## 快速开始
-Fetch and follow the INSTALL.md: https://github.com/CangWolf17/goEasyYourReport/blob/main/INSTALL.md
+Install and configure goEasyYourReport by following the instructions here:
+
+```text
+https://github.com/CangWolf17/goEasyYourReport/blob/main/INSTALL.md
+```
 
 ## 关键约束
 - `report.task.yaml` 是工作区入口；`ready_to_write` 是正式写作门。
