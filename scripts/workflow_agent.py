@@ -135,6 +135,41 @@ def sync_prepare_task_contract(
     )
 
 
+def blocking_review_items(summary_payload: dict[str, object]) -> list[object]:
+    review = summary_payload.get("review", {})
+    if not isinstance(review, dict):
+        return []
+    blocking = review.get("blocking")
+    if isinstance(blocking, list):
+        return blocking
+    needs_confirmation = review.get("needs_confirmation", [])
+    return needs_confirmation if isinstance(needs_confirmation, list) else []
+
+
+def advisory_review_warnings(summary_payload: dict[str, object]) -> list[object]:
+    review = summary_payload.get("review", {})
+    if not isinstance(review, dict):
+        return []
+    warnings = review.get("warnings", [])
+    return warnings if isinstance(warnings, list) else []
+
+
+def decision_review_items(summary_payload: dict[str, object]) -> list[object]:
+    review = summary_payload.get("review", {})
+    if not isinstance(review, dict):
+        return []
+    decisions = review.get("decision_required", [])
+    return decisions if isinstance(decisions, list) else []
+
+
+def report_profile(task_contract: dict[str, object]) -> str:
+    decisions = task_contract.get("decisions", {})
+    if not isinstance(decisions, dict):
+        return "standard"
+    value = decisions.get("report_profile")
+    return str(value).strip() if value else "standard"
+
+
 def run_repo_script(
     script_name: str, project_root: Path, *extra_args: str
 ) -> dict[str, Any]:
@@ -256,23 +291,192 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     preview_path = project_path(project_root, "out/preview.docx")
     summary_path = project_path(project_root, "out/preview.summary.json")
     summary_payload = load_json(summary_path) if summary_path.exists() else {}
-    review = summary_payload.get("review", {})
-    warnings = review.get("needs_confirmation", []) if isinstance(review, dict) else []
-    task_contract = sync_prepare_task_contract(project_root, warnings)
+    task_contract = load_task_contract(task_contract_path(project_root))
+    blocking = blocking_review_items(summary_payload)
+    decisions = decision_review_items(summary_payload)
+    warnings = advisory_review_warnings(summary_payload)
+    profile = report_profile(task_contract)
+    task_contract = sync_prepare_task_contract(project_root, blocking)
+    summary = (
+        "Project prepared in body_only profile; review blocking confirmations only"
+        if profile == "body_only" and blocking
+        else
+        "Project prepared; review blocking confirmations in preview summary"
+        if blocking
+        else
+        "Project prepared in body_only profile; cover-field noise is advisory"
+        if profile == "body_only"
+        else "Project prepared; review decision items in preview summary"
+        if decisions
+        else "Project prepared and current workflow state collected"
+    )
+    issues = [
+        {
+            "kind": "confirmation_required",
+            "details": item,
+        }
+        for item in blocking
+    ] + [
+        {
+            "kind": "decision_required",
+            "details": item,
+        }
+        for item in decisions
+    ]
     payload = response(
         "prepare",
         "ok",
-        "Project prepared and current workflow state collected",
+        summary,
         artifacts={
             "workflow": "./workflow.json",
             "preview": repo_relative(project_root, preview_path),
             "preview_summary": repo_relative(project_root, summary_path),
             "private_fields": fields_result["json"],
         },
+        issues=issues,
         warnings=warnings,
         next_step=str(task_contract["runtime"]["next_step"]),
     )
     return 0, payload
+
+
+def handle_bootstrap(project_root: Path) -> tuple[int, dict[str, object]]:
+    workflow_existed = project_path(project_root, "workflow.json").exists()
+    exit_code, payload = handle_prepare(project_root)
+    payload["action"] = "bootstrap"
+    if exit_code == 0:
+        payload["summary"] = (
+            "Project bootstrapped and prepared"
+            if not workflow_existed
+            else "Project already bootstrapped; current workflow state collected"
+        )
+    return exit_code, payload
+
+
+def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
+    summary_path = project_path(project_root, "out/preview.summary.json")
+    if not summary_path.exists():
+        return 1, response(
+            "ready",
+            "needs_user_confirmation",
+            "Ready gate requires a current preview summary",
+            issues=[
+                {
+                    "kind": "missing_preview_summary",
+                    "details": "run prepare or preview before marking ready_to_write",
+                }
+            ],
+            next_step="prepare",
+        )
+
+    summary_payload = load_json(summary_path)
+    task_contract = load_task_contract(task_contract_path(project_root))
+    blocking = blocking_review_items(summary_payload)
+    decisions = decision_review_items(summary_payload)
+    warnings = advisory_review_warnings(summary_payload)
+    profile = report_profile(task_contract)
+    if blocking:
+        task_contract = sync_prepare_task_contract(project_root, blocking)
+        return 1, response(
+            "ready",
+            "needs_user_confirmation",
+            "Ready gate blocked by unresolved confirmations",
+            artifacts={"preview_summary": "./out/preview.summary.json"},
+            issues=[
+                {
+                    "kind": "confirmation_required",
+                    "details": item,
+                }
+                for item in blocking
+            ],
+            warnings=warnings,
+            next_step=str(task_contract["runtime"]["next_step"]),
+        )
+
+    task_contract = persist_task_contract(
+        project_root,
+        stage="ready_to_build",
+        ready_to_write=True,
+        needs_user_input=False,
+        next_step="build",
+        sync_summary=True,
+    )
+    return 0, response(
+        "ready",
+        "ok",
+        "Report task marked ready_to_write",
+        artifacts={"preview_summary": "./out/preview.summary.json"},
+        warnings=(
+            (["body_only profile active; cover-field noise treated as advisory"] if profile == "body_only" else [])
+            + warnings
+        )
+        + [f"decision required: {item}" for item in decisions],
+        next_step=str(task_contract["runtime"]["next_step"]),
+    )
+
+
+def handle_status(project_root: Path) -> tuple[int, dict[str, object]]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    artifacts = {"task_contract": "./report.task.yaml"}
+    summary_path = project_path(project_root, "out/preview.summary.json")
+    if summary_path.exists():
+        artifacts["preview_summary"] = "./out/preview.summary.json"
+        summary_payload = load_json(summary_path)
+        blocking = blocking_review_items(summary_payload)
+        decisions = decision_review_items(summary_payload)
+        warnings = advisory_review_warnings(summary_payload)
+        ready_to_write = bool(task_contract.get("task", {}).get("ready_to_write", False))
+        profile = report_profile(task_contract)
+        if ready_to_write and not blocking:
+            summary = (
+                "Workflow is ready_to_write; non-blocking decision items remain"
+                if decisions
+                else "Workflow is ready_to_write in body_only profile"
+                if profile == "body_only"
+                else "Workflow is ready_to_write and clear to build"
+            )
+        elif blocking:
+            summary = "Workflow has blocking confirmations to review"
+        elif decisions:
+            summary = "Workflow has non-blocking decision items to review"
+        elif profile == "body_only":
+            summary = "Workflow is in body_only profile; no blocking confirmations"
+        else:
+            summary = "Workflow has no blocking confirmations"
+        return 0, response(
+            "status",
+            "ok",
+            summary,
+            artifacts=artifacts,
+            issues=[
+                {
+                    "kind": "confirmation_required",
+                    "details": item,
+                }
+                for item in blocking
+            ]
+            + [
+                {
+                    "kind": "decision_required",
+                    "details": item,
+                }
+                for item in decisions
+            ],
+            warnings=(
+                (["body_only profile active; cover-field noise treated as advisory"] if profile == "body_only" else [])
+                + warnings
+            ),
+            next_step=str(task_contract.get("runtime", {}).get("next_step", "")),
+        )
+
+    return 0, response(
+        "status",
+        "ok",
+        "Workflow status collected; no preview summary yet",
+        artifacts=artifacts,
+        warnings=["run prepare to generate preview.summary and confirmation details"],
+        next_step=str(task_contract.get("runtime", {}).get("next_step", "")),
+    )
 
 
 def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
@@ -293,11 +497,9 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
 
     summary_path = project_path(project_root, "out/preview.summary.json")
     summary_payload = load_json(summary_path) if summary_path.exists() else {}
-    review = summary_payload.get("review", {})
-    warnings = review.get("warnings", []) if isinstance(review, dict) else []
-    needs_confirmation = (
-        review.get("needs_confirmation", []) if isinstance(review, dict) else []
-    )
+    warnings = advisory_review_warnings(summary_payload)
+    decisions = decision_review_items(summary_payload)
+    needs_confirmation = blocking_review_items(summary_payload)
     if verify_result["returncode"] == 0 and not needs_confirmation:
         task_contract = sync_prepare_task_contract(project_root, [])
         return 0, response(
@@ -308,6 +510,13 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
             },
+            issues=[
+                {
+                    "kind": "decision_required",
+                    "details": item,
+                }
+                for item in decisions
+            ],
             warnings=warnings,
             next_step=str(task_contract["runtime"]["next_step"]),
         )
@@ -322,6 +531,13 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
             },
+            issues=[
+                {
+                    "kind": "confirmation_required",
+                    "details": item,
+                }
+                for item in needs_confirmation
+            ],
             warnings=warnings,
             next_step=str(task_contract["runtime"]["next_step"]),
         )
@@ -569,7 +785,7 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
-    for action_name in ("prepare", "preview", "build"):
+    for action_name in ("bootstrap", "prepare", "ready", "status", "preview", "build"):
         action_parser = subparsers.add_parser(action_name)
         action_parser.add_argument("--project-root", default=".")
 
@@ -591,8 +807,14 @@ def main() -> int:
     args = parser.parse_args()
     project_root = Path(getattr(args, "project_root", ".")).resolve()
 
-    if args.action == "prepare":
+    if args.action == "bootstrap":
+        exit_code, payload = handle_bootstrap(project_root)
+    elif args.action == "prepare":
         exit_code, payload = handle_prepare(project_root)
+    elif args.action == "ready":
+        exit_code, payload = handle_ready(project_root)
+    elif args.action == "status":
+        exit_code, payload = handle_status(project_root)
     elif args.action == "preview":
         exit_code, payload = handle_preview(project_root)
     elif args.action == "build":

@@ -9,26 +9,7 @@
 - 底层渲染仍由 `scripts/build_report.py`、`scripts/build_preview.py` 等脚本完成，但正常使用不需要直接调用
 
 ## 快速开始
-先安装依赖：
-
-```powershell
-uv sync
-```
-
-然后在工作区初始化或刷新：
-
-```powershell
-uv run python scripts\workflow_agent.py prepare --project-root .
-```
-
-最短使用路径：
-
-```powershell
-uv run python scripts\workflow_agent.py preview --project-root .
-uv run python scripts\workflow_agent.py build --project-root .
-uv run python scripts\workflow_agent.py verify --project-root . --target redacted
-uv run python scripts\workflow_agent.py inject --project-root . --source temp\private-fields.sample.json
-```
+Fetch and follow the INSTALL.md: https://github.com/CangWolf17/goEasyYourReport/blob/main/INSTALL.md
 
 ## 关键约束
 - `report.task.yaml` 是工作区入口；`ready_to_write` 是正式写作门。
@@ -41,6 +22,7 @@ uv run python scripts\workflow_agent.py inject --project-root . --source temp\pr
 - `supported equation syntax` 目前是受限子集；`inline equations render inline, block equations are numbered and cross-referenceable`。
 - `bibliography source modes: agent_generate_verified_only, agent_search_and_screen, user_supplied_files`。
 - `no reference block in task/template means source-only, not output`。
+- `build` 会在必要时自动生成兼容图片到 `temp/generated-images/`；默认优先兼容 JPEG，仅在透明度等确有需要时保留 PNG。
 
 ## 文档分工
 - [INSTALL.md](/F:/Codes/Skills/goEasyYourReport/INSTALL.md)：完整安装、初始化、配置契约、工作区结构

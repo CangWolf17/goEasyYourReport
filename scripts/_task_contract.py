@@ -30,6 +30,7 @@ def default_task_contract() -> dict[str, object]:
             "evidence_dir": "./materials/evidence",
         },
         "decisions": {
+            "report_profile": "standard",
             "toc_enabled": None,
             "references_required": None,
             "appendix_enabled": None,

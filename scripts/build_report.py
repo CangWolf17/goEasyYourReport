@@ -62,7 +62,7 @@ def main() -> int:
         },
     }
     equation_status: dict[str, object] = {"unsupported": []}
-    image_status = {"inserted": [], "failed": []}
+    image_status = {"inserted": [], "normalized": [], "failed": []}
     fillable = plan.get("regions", {}).get("fillable", [])
     if fillable:
         image_status = render_blocks(
@@ -70,6 +70,7 @@ def main() -> int:
             fillable[0],
             blocks,
             body_path.parent,
+            Path(args.project_root).resolve(),
             code_theme,
             code_status,
             plan.get("semantics"),

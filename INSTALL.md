@@ -55,6 +55,12 @@ uv sync
 uv run python scripts/workflow_agent.py prepare --project-root .
 ```
 
+如果要从框架根目录直接初始化一个外部目标目录，也可以：
+
+```powershell
+uv run python scripts/workflow_agent.py bootstrap --project-root F:\path\to\report-project
+```
+
 如果目标目录还是新项目，需要先播种默认状态：
 
 ```powershell
@@ -98,7 +104,10 @@ uv run python scripts/workflow_agent.py <action> --project-root .
 ```
 
 稳定动作：
+- `bootstrap`
 - `prepare`
+- `status`
+- `ready`
 - `preview`
 - `build`
 - `verify`
@@ -152,6 +161,7 @@ agent 平时应优先控制这些面：
 - 渲染部件不能删除
 - “渲染什么、如何渲染”通过任务需求、模板保留块、`report.task.yaml` 的高层决策和工作区输入来控制
 - 如果当前正式参数面不够，再扩展契约，不要绕开框架直接 patch 运行路径
+- 图片兼容回退生成的中间文件应位于 `temp/generated-images/`，它们是可再生构建产物，不是用户源材料
 
 ## 9. 默认模板与风格边界
 - `default template` 是受保护基线。
@@ -159,16 +169,25 @@ agent 平时应优先控制这些面：
 - 如果用户自带模板缺语义样式，优先通过 `semantic template scan` 与推荐模板流程修复，而不是硬编码覆盖。
 
 ## 10. 正常工作流
-建议顺序：
+建议顺序（默认 guarded path）：
 
 1. 收集需求、模板、任务书、参考资料、图片等输入。
 2. 更新 `report.task.yaml` 的高层决策和输入路径。
 3. 运行 `prepare`。
-4. 检查 `preview` 包与 `out/preview.summary.json`。
-5. 在真正满足写作条件后，把任务推进到 `ready_to_write`。
+4. 如需快速查看当前状态，运行 `status` 检查 blocking confirmations 与 advisory warnings。
+5. 在真正满足写作条件后，运行 `ready` 或手动把任务推进到 `ready_to_write`。
 6. 运行 `build`。
 7. 运行 `verify`。
 8. 仅在 `redacted` 结果通过后运行 `inject`。
+
+`preview` 是可选的显式路径：当你想单独刷新预览文档、查看预览验证结果，或在 build 前先检查 preview 包时再运行。
+
+`status` 会把当前项分成：
+- `confirmation_required`：真正阻塞
+- `decision_required`：非阻塞但仍需明确的决策
+- `warnings`：仅提示
+
+轻量 body-only / assignment 任务可在 `report.task.yaml -> decisions.report_profile` 中显式设置为 `body_only`，用于压低 cover/no-field 相关噪音。
 
 ## 11. 硬门与确认点
 ### 11.1 Ready-To-Write Gate

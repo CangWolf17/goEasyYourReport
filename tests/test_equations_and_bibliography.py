@@ -136,7 +136,13 @@ class BibliographyStrategyTests(ProjectHarness):
         payload = json.loads(result.stdout)
 
         self.assertEqual(payload["status"], "ok")
-        self.assertIn("confirm bibliography source mode", payload["warnings"])
+        self.assertTrue(
+            any(
+                issue.get("kind") == "decision_required"
+                and issue.get("details") == "confirm bibliography source mode"
+                for issue in payload["issues"]
+            )
+        )
 
     def test_bibliography_is_source_only_when_output_block_missing(self) -> None:
         from scripts._bibliography import normalize_bibliography_entries, should_emit_bibliography

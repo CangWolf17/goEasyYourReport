@@ -57,9 +57,21 @@ def build_summary(
     }
     cross_references = semantics.get("cross_references", {})
     bibliography = semantics.get("bibliography", {})
+    report_decisions = task_contract.get("decisions", {})
     field_candidates = anchors.get("field_candidates", [])
+    locked_regions = plan.get("regions", {}).get("locked", [])
     if not isinstance(field_candidates, list):
         field_candidates = []
+    if not isinstance(locked_regions, list):
+        locked_regions = []
+    cover_region_present = any(
+        isinstance(region, dict) and region.get("id") == "cover"
+        for region in locked_regions
+    )
+    body_only_profile = (
+        isinstance(report_decisions, dict)
+        and report_decisions.get("report_profile") == "body_only"
+    )
     bound_anchor_texts = {
         str(item.get("anchor_text", "")).strip()
         for item in bindings
@@ -80,32 +92,47 @@ def build_summary(
         and str(field.get("name", "")).strip()
     }
 
-    needs_confirmation = []
+    blocking_confirmations: list[str] = []
+    decision_required: list[str] = []
+    advisory_warnings: list[str] = []
     if not plan.get("regions", {}).get("fillable", []):
-        needs_confirmation.append("no fillable regions detected")
+        blocking_confirmations.append("no fillable regions detected")
     if not anchors.get("field_candidates", []):
-        needs_confirmation.append("no field candidates detected")
+        if cover_region_present and not body_only_profile:
+            blocking_confirmations.append(
+                "cover region detected without recognizable field candidates"
+            )
+        else:
+            advisory_warnings.append("no field candidates detected")
     if not bindings:
-        needs_confirmation.append("no field bindings configured")
+        if cover_region_present and not body_only_profile:
+            blocking_confirmations.append("no field bindings configured")
+        else:
+            advisory_warnings.append("no field bindings configured")
     if unbound_candidates:
-        needs_confirmation.append("cover field candidates detected without bindings")
+        if body_only_profile:
+            advisory_warnings.append("cover field candidates detected without bindings")
+        else:
+            blocking_confirmations.append(
+                "cover field candidates detected without bindings"
+            )
     if template_recommendation and template_recommendation.get("pending_acceptance"):
-        needs_confirmation.append("template style recommendation pending")
+        decision_required.append("template style recommendation pending")
     if not outline_complete:
-        needs_confirmation.append("template outline semantics incomplete")
+        decision_required.append("template outline semantics incomplete")
     if any(gap in {"列表编号", "列表符号"} for gap in style_gaps):
-        needs_confirmation.append("list style semantics unresolved")
+        decision_required.append("list style semantics unresolved")
     if toc.get("detected") and toc.get("needs_confirmation", False):
-        needs_confirmation.append("toc detected; confirm whether to enable")
+        blocking_confirmations.append("toc detected; confirm whether to enable")
     if cross_references.get("figure_table_enabled") == "needs_confirmation":
-        needs_confirmation.append(
+        decision_required.append(
             "confirm whether to insert figure/table cross references"
         )
     if (
         bibliography.get("output_block_present")
         and bibliography.get("source_mode") == "needs_confirmation"
     ):
-        needs_confirmation.append("confirm bibliography source mode")
+        decision_required.append("confirm bibliography source mode")
 
     return {
         "version": "1.0",
@@ -154,8 +181,10 @@ def build_summary(
         },
         "template_recommendation": template_recommendation or {},
         "review": {
-            "warnings": [],
-            "needs_confirmation": needs_confirmation,
+            "warnings": advisory_warnings,
+            "decision_required": decision_required,
+            "blocking": blocking_confirmations,
+            "needs_confirmation": blocking_confirmations + decision_required,
         },
     }
 

@@ -37,6 +37,7 @@ from scripts._docx_xml import (
     set_paragraph_pagination,
     word_qn,
 )
+from scripts._image_compat import normalize_image_for_docx
 from scripts._shared import load_json, project_path
 
 
@@ -583,7 +584,8 @@ def apply_image_block(
     available_styles: set[str],
     width,
     body_dir: Path,
-    image_status: dict[str, list[dict[str, str]]],
+    image_status: dict[str, list[dict[str, object]]],
+    project_root: Path,
 ):
     clear_paragraph(paragraph)
     alt = str(block.get("alt", "Image"))
@@ -612,6 +614,38 @@ def apply_image_block(
         run.add_picture(str(resolved_path), width=width)
         image_status["inserted"].append(details)
     except Exception as exc:
+        docx_image_exceptions = importlib.import_module("docx.image.exceptions")
+        known_image_errors = (
+            docx_image_exceptions.UnexpectedEndOfFileError,
+            docx_image_exceptions.InvalidImageStreamError,
+            docx_image_exceptions.UnrecognizedImageError,
+        )
+        if isinstance(exc, known_image_errors):
+            try:
+                normalized = normalize_image_for_docx(
+                    project_root,
+                    resolved_path,
+                    reason=type(exc).__name__,
+                )
+                run = paragraph.add_run()
+                run.add_picture(str(normalized.generated), width=width)
+                normalized_details = {
+                    **details,
+                    "generated_path": normalized.generated,
+                    "reason": normalized.reason,
+                    "original_format": normalized.original_format,
+                    "output_format": normalized.output_format,
+                    "original_bytes": normalized.original_bytes,
+                    "output_bytes": normalized.output_bytes,
+                    "resized": normalized.resized,
+                }
+                image_status.setdefault("normalized", []).append(normalized_details)
+                image_status["inserted"].append(
+                    {**details, "resolved_path": normalized.generated}
+                )
+                return paragraph, True
+            except Exception:
+                pass
         if "Caption" in available_styles:
             paragraph.style = "Caption"
         paragraph.add_run(f"[Image Insert Failed] {alt} ({raw_path}): {exc}")
@@ -705,11 +739,12 @@ def render_blocks(
     region: dict[str, object],
     blocks: list[dict[str, object]],
     body_dir: Path,
+    project_root: Path,
     code_theme: dict[str, object],
     code_status: dict[str, object],
     semantics: dict[str, object] | None = None,
     equation_status: dict[str, object] | None = None,
-) -> dict[str, list[dict[str, str]]]:
+) -> dict[str, list[dict[str, object]]]:
     start_raw = region.get("start_paragraph")
     end_raw = region.get("end_paragraph")
     if not isinstance(start_raw, int) or start_raw >= len(doc.paragraphs):
@@ -727,7 +762,11 @@ def render_blocks(
     }
     body_font = style_font_settings(doc.styles, body_style_name(available_styles))
     width = content_width(doc)
-    image_status: dict[str, list[dict[str, str]]] = {"inserted": [], "failed": []}
+    image_status: dict[str, list[dict[str, object]]] = {
+        "inserted": [],
+        "normalized": [],
+        "failed": [],
+    }
     figure_index = 0
     table_index = 0
     last_heading_text = ""
@@ -801,6 +840,7 @@ def render_blocks(
                 width,
                 body_dir,
                 image_status,
+                project_root,
             )
             used_last = image_paragraph
             if inserted:
@@ -888,6 +928,7 @@ def render_blocks(
                 width,
                 body_dir,
                 image_status,
+                project_root,
             )
             used_last = image_paragraph
             if inserted:

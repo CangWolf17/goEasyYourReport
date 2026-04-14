@@ -310,7 +310,12 @@ class ConfirmationPackageTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assert_normalized_agent_payload(payload, "prepare")
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["issues"], [])
+        self.assertTrue(
+            all(
+                issue["kind"] in {"confirmation_required", "decision_required"}
+                for issue in payload["issues"]
+            )
+        )
         self.assertTrue(payload["summary"])
         self.assertTrue(payload["artifacts"])
         self.assertTrue(payload["next_step"])
@@ -416,11 +421,13 @@ class ConfirmationPackageTests(unittest.TestCase):
         project_root = self.create_project()
         result = self.run_workflow(project_root, "preview")
 
-        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
         payload = json.loads(result.stdout)
         self.assert_normalized_agent_payload(payload, "preview")
-        self.assertEqual(payload["status"], "needs_user_confirmation")
-        self.assertEqual(payload["next_step"], "review_preview_summary")
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(
+            any(issue["kind"] == "decision_required" for issue in payload["issues"])
+        )
 
     def test_workflow_agent_build_blocks_on_unresolved_toc_confirmation(self) -> None:
         project_root = self.create_project()
