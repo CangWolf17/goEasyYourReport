@@ -1,6 +1,6 @@
 # goEasyYourReport
 
-`goEasyYourReport` 是一个面向中文场景的 agent-driven DOCX 报告框架。它把模板扫描、`preview` 确认、正文渲染、脱敏构建、私密注入和验证收敛到同一个工作区里，适合让 agent 在一次任务内完成“收集需求 -> 写作/排版 -> 产出报告”。
+`goEasyYourReport` 是一个面向中文场景的 agent-driven DOCX 报告框架Skill。它把模板扫描、`preview` 确认、正文渲染、脱敏构建、私密注入和验证收敛到同一个工作区里，适合让 agent 在一次任务内完成“收集需求 -> 写作/排版 -> 产出报告”。
 
 ## 你会得到什么
 - 用 `report.task.yaml` 管理任务状态、输入材料路径和高层决策
@@ -9,9 +9,10 @@
 - 底层渲染仍由 `scripts/build_report.py`、`scripts/build_preview.py` 等脚本完成，但正常使用不需要直接调用
 
 ## 快速开始
-Install and configure goEasyYourReport by following the instructions here:
+For Agent:
 
 ```text
+Install and configure goEasyYourReport by following the instructions here:
 https://github.com/CangWolf17/goEasyYourReport/blob/main/INSTALL.md
 ```
 
