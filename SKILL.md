@@ -12,20 +12,22 @@ The build path can automatically rescue some problematic source images by genera
 ## Quick Start / Default Path
 
 Default path:
-1. Read `report.task.yaml` and `workflow.json` for task context, then confirm the effective template in `config/template.plan.json.selection.primary_template`.
-2. Update the writable inputs:
+1. If global defaults have not been onboarded yet, start with `defaults-onboard` and decide whether to use packaged defaults or customize with a DOCX preview.
+2. Read `report.task.yaml` and `workflow.json` for task context, then confirm the effective template in `config/template.plan.json.selection.primary_template`.
+3. Update the writable inputs:
    - `docs/task_requirements.md`
    - `docs/document_requirements.md`
    - `docs/report_body.md`
    - optional images / evidence under `assets/` or `docs/references/`
-3. Run `prepare`.
-4. Resolve only true blocking confirmations from `out/preview.summary.json`.
-5. Use `status` any time you want a quick view of blocking confirmations vs advisory warnings.
-6. Run `ready` to mark the task `ready_to_write`.
-7. Run `build`, then `verify`.
-8. Run `inject` only after the redacted output passes verification.
+4. Run `prepare`.
+5. Resolve only true blocking confirmations from `out/preview.summary.json`.
+6. Use `status` any time you want a quick view of blocking confirmations vs advisory warnings.
+7. Run `ready` to mark the task `ready_to_write`.
+8. Run `build`, then `verify`.
+9. Run `inject` only after the redacted output passes verification.
 
 ```powershell
+uv run python scripts\workflow_agent.py defaults-onboard --project-root . --use-defaults
 uv run python scripts\workflow_agent.py prepare --project-root .
 uv run python scripts\workflow_agent.py status --project-root .
 uv run python scripts\workflow_agent.py ready --project-root .
@@ -58,7 +60,9 @@ What is usually advisory:
 - Effective runtime template: `config/template.plan.json.selection.primary_template`
 - `workflow.json.templates.main_template`: seed/default mirror only
 - `report.task.yaml.inputs.template_path`: task/handoff mirror only
+- Global defaults: install/onboarding seed only; never a second runtime authority
 - Pending recommendation does **not** switch authority; only apply does
+- Recommendation acceptance requires a matched preview DOCX artifact, not just a recommendation log
 
 ## Common Variants
 

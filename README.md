@@ -26,6 +26,21 @@ https://github.com/CangWolf17/goEasyYourReport/blob/main/INSTALL.md
 ## 第一次上手
 最短路径分两种：
 
+### 0) 先做一次全局默认配置
+安装 skill 之后，先通过 facade 走一次全局默认 onboarding：
+
+```powershell
+uv run python scripts/workflow_agent.py defaults-onboard --project-root . --use-defaults
+```
+
+如果你想让 agent 带你做样式磨合，则走定制路径。定制路径只有在成功生成可查看的 DOCX 预览后才算完成：
+
+```powershell
+uv run python scripts/workflow_agent.py defaults-onboard --project-root . --customize
+```
+
+之后的项目如果没有自己的要求/配置，会优先继承这些全局默认值；但项目自己的 `config/template.plan.json.selection.primary_template` 仍然是唯一 runtime authority。
+
 ### 1) 已经在一个 goEasyYourReport 工作区里
 ```powershell
 uv sync
@@ -45,8 +60,10 @@ uv run python scripts/workflow_agent.py bootstrap --project-root F:\path\to\repo
 - `Build blocked until report.task.yaml marks the task as ready_to_write.`
 - 默认模板是 `default template` 基线，agent 不应静默重写。
 - 运行时模板只认 `config/template.plan.json.selection.primary_template`；不要把 `workflow.json` 或 `report.task.yaml.inputs.template_path` 当成 co-authority。
+- 全局默认配置只负责 install/onboarding 和缺省补种；它不是第二个 runtime authority。
 - `build` 带有 `DOCX integrity gate`；如果失败会返回 `docx_integrity_error`，必须停在 before `verify` or `inject`。
 - `prepare` / `preview` 会暴露 `semantic template scan`、`style-gap confirmation`、`TOC / reference-block detection in preview` 和 `semantic style recommendation before build`。
+- 当样式存在歧义或 recommendation 存在时，推荐方案和预览 DOCX 必须一起出现；不能只给其中一半。
 - `TOC is inserted only when detected and confirmed`。
 - `figure / table cross-references are a post-processing step`，并且 `cross-reference insertion requires user confirmation`。
 - `supported equation syntax` 目前是受限子集；`inline equations render inline, block equations are numbered and cross-referenceable`。

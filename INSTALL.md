@@ -50,6 +50,20 @@ uv sync
 9. `config/field.binding.json`
 
 ## 5. 初始化与刷新
+安装完成后，建议先跑一次**全局默认 onboarding**，再进入具体项目：
+
+```powershell
+uv run python scripts/workflow_agent.py defaults-onboard --project-root . --use-defaults
+```
+
+如果你要定制全局默认模板/风格磨合，则走：
+
+```powershell
+uv run python scripts/workflow_agent.py defaults-onboard --project-root . --customize
+```
+
+`--customize` 只有在成功生成可查看的 `out/defaults-preview.docx` 后才算完成。
+
 已经是框架工作区时，直接刷新：
 
 ```powershell
@@ -105,6 +119,10 @@ uv run python scripts/workflow_agent.py <action> --project-root .
 ```
 
 稳定动作：
+- `defaults-onboard`
+- `defaults-status`
+- `defaults-import`
+- `defaults-export`
 - `bootstrap`
 - `prepare`
 - `status`
@@ -137,6 +155,16 @@ uv run python scripts/workflow_agent.py <action> --project-root .
 - 真正要切换当前生效模板时，改这里，或者通过 recommendation apply 去更新这里。
 - `prepare` / `bootstrap` 会把这里同步到其它 mirror surface。
 - pending recommendation 只是建议，不会自动改 authority。
+
+### 8.1.1 全局默认配置（seed-only）
+全局默认配置只用于两类事情：
+1. 安装 / 首次使用时做默认值 onboarding；
+2. 项目缺少配置 / 要求时，补种缺失项。
+
+它**不负责**：
+- 覆盖已有项目配置
+- 覆盖 `config/template.plan.json.selection.primary_template`
+- 在正常运行时充当第二个 authority
 
 ### 8.2 `workflow.json.templates.main_template`
 这是 seed/default mirror，主要用于：
@@ -198,6 +226,7 @@ agent 平时应优先控制这些面：
 - **误区 1：** 改 `workflow.json.templates.main_template` 就能切运行时模板。**事实：** 运行时只认 `config/template.plan.json.selection.primary_template`。
 - **误区 2：** 改 `report.task.yaml.inputs.template_path` 就能驱动渲染器。**事实：** 这是 task/handoff mirror，不是 runtime selector。
 - **误区 3：** recommendation 一生成就已经接管模板。**事实：** pending recommendation 只是信息；只有 apply 才会切 authority。
+- **误区 4：** 只要 recommendation 存在，就可以跳过预览直接推进。**事实：** recommendation 与预览 DOCX 必须是同一轮生成、同一 pairing，缺失/过期/不匹配都不能当成可接受状态。
 
 ## 9. 默认模板与风格边界
 - `default template` 是受保护基线。
@@ -245,6 +274,14 @@ agent 平时应优先控制这些面：
 - `semantic style recommendation before build`
 
 如果这些确认项未解决，就不应直接推进正式构建。
+
+### 11.4 Recommendation / Preview Pair Gate
+当存在样式歧义或 recommendation 时，`prepare` / `preview` / `status` / `ready` 都必须围绕同一组 recommendation + preview pairing 工作。
+
+要点：
+- `ready` 只会在 pairing 为 `matched` 时放行
+- 如果 pairing 为 `missing` / `stale` / `mismatched`，就必须先重新生成预览
+- 不能只看 recommendation 日志，也不能只看 preview DOCX；两者必须是同一轮、同一 authority 下生成的配对产物
 
 ## 12. TOC、交叉引用、公式、参考文献
 - `TOC is inserted only when detected and confirmed`。

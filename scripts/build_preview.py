@@ -14,15 +14,14 @@ from scripts._docx_xml import (
     insert_paragraph_before,
 )
 from scripts._docx_semantics import ensure_plan_semantics
+from scripts._preview_pairing import (
+    build_pairing,
+    file_fingerprint,
+    normalize_repo_relative,
+    recommendation_fingerprint,
+)
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
 from scripts._task_contract import load_task_contract
-
-
-def normalize_repo_relative(path_text: str) -> str:
-    normalized = Path(path_text).as_posix()
-    if normalized.startswith("./"):
-        return normalized
-    return f"./{normalized.lstrip('./')}"
 
 
 def build_summary(
@@ -32,6 +31,7 @@ def build_summary(
     preview_relative: str,
     task_contract: dict[str, object],
     template_recommendation: dict[str, object] | None = None,
+    pairing: dict[str, object] | None = None,
 ) -> dict[str, object]:
     anchors = plan.get("anchors", {})
     if not isinstance(anchors, dict):
@@ -180,6 +180,7 @@ def build_summary(
             },
         },
         "template_recommendation": template_recommendation or {},
+        "pairing": pairing or {},
         "review": {
             "warnings": advisory_warnings,
             "decision_required": decision_required,
@@ -195,15 +196,15 @@ def main() -> int:
     )
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--plan", default="config/template.plan.json")
+    parser.add_argument("--preview-output")
     args = parser.parse_args()
 
     plan = load_json(project_path(args.project_root, args.plan))
     template_path = project_path(
         args.project_root, plan["selection"]["primary_template"].replace("./", "")
     )
-    preview_path = project_path(
-        args.project_root, plan["selection"]["preview_output"].replace("./", "")
-    )
+    preview_output = args.preview_output or plan["selection"]["preview_output"]
+    preview_path = project_path(args.project_root, str(preview_output).replace("./", ""))
     summary_path = preview_path.with_suffix(".summary.json")
     binding_path = project_path(
         args.project_root, plan["field_binding"]["path"].replace("./", "")
@@ -260,7 +261,30 @@ def main() -> int:
     doc.save(preview_path)
 
     preview_relative = normalize_repo_relative(str(plan["selection"]["preview_output"]))
+    if args.preview_output:
+        preview_relative = normalize_repo_relative(str(args.preview_output))
     summary_relative = preview_relative.removesuffix(".docx") + ".summary.json"
+    template_path = project_path(
+        args.project_root, plan["selection"]["primary_template"].replace("./", "")
+    )
+    recommendation_relative = "./logs/template_style_recommendation.json"
+    pairing = None
+    if template_recommendation:
+        pairing = build_pairing(
+            Path(args.project_root).resolve(),
+            template_path=plan["selection"]["primary_template"],
+            template_fingerprint=file_fingerprint(template_path),
+            recommendation_fingerprint_value=recommendation_fingerprint(
+                template_recommendation
+            ),
+            recommended_template_path=template_recommendation.get("recommended_template"),
+            preview_path=preview_relative,
+            preview_summary_path=summary_relative,
+            recommendation_path=recommendation_relative,
+        )
+        template_recommendation["pairing"] = pairing
+        if recommendation_path.exists():
+            dump_json(recommendation_path, template_recommendation)
     summary = build_summary(
         plan,
         binding,
@@ -268,6 +292,7 @@ def main() -> int:
         preview_relative,
         task_contract,
         template_recommendation,
+        pairing,
     )
     dump_json(summary_path, summary)
     emit_json({"preview": str(preview_path), "summary": str(summary_path)})

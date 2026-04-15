@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +17,7 @@ from scripts._shared import (
     import_docx,
     run_python_script,
 )
+from scripts._global_defaults import load_global_defaults, seed_missing_project_defaults
 from scripts._task_contract import (
     default_task_contract,
     dump_task_contract,
@@ -274,9 +274,11 @@ def main() -> int:
             created_files.append(str(root / relative))
 
     task_contract_path = root / "report.task.yaml"
+    task_contract_created = False
     if args.force or not task_contract_path.exists():
         dump_task_contract(task_contract_path, default_task_contract())
         created_files.append(str(task_contract_path))
+        task_contract_created = True
 
     created_files.extend(sync_script_skeleton(root, overwrite=args.force))
 
@@ -286,6 +288,16 @@ def main() -> int:
     reference_sample = root / "templates" / "reference.sample.docx"
 
     copied_templates = []
+    global_defaults = load_global_defaults()
+    global_template_source = None
+    global_reference_source = None
+    if isinstance(global_defaults, dict):
+        templates_payload = global_defaults.get("templates", {})
+        if isinstance(templates_payload, dict):
+            global_template_source = templates_payload.get("template_source")
+            global_reference_source = templates_payload.get(
+                "reference_template_source"
+            )
     if ensure_sample_template(template_sample, overwrite=args.force):
         copied_templates.append(str(template_sample))
     if ensure_sample_template(reference_sample, reference=True, overwrite=args.force):
@@ -305,6 +317,8 @@ def main() -> int:
     if copy_if_missing(
         Path(args.template).resolve()
         if args.template
+        else Path(str(global_template_source)).resolve()
+        if global_template_source
         else template_sample
         if template_sample.exists()
         else None,
@@ -315,6 +329,8 @@ def main() -> int:
     if copy_if_missing(
         Path(args.reference_template).resolve()
         if args.reference_template
+        else Path(str(global_reference_source)).resolve()
+        if global_reference_source
         else reference_sample
         if reference_sample.exists()
         else None,
@@ -322,6 +338,18 @@ def main() -> int:
         overwrite=args.force,
     ):
         copied_templates.append(str(reference_user))
+
+    task_contract = default_task_contract()
+    if task_contract_path.exists():
+        task_contract = __import__(
+            "scripts._task_contract", fromlist=["load_task_contract"]
+        ).load_task_contract(task_contract_path)
+    if seed_missing_project_defaults(
+        root,
+        task_contract=task_contract,
+        overwrite_decisions=task_contract_created or args.force,
+    ):
+        dump_task_contract(task_contract_path, task_contract)
 
     sync_template_authority_mirrors(root)
 

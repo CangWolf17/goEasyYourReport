@@ -9,6 +9,16 @@ if __package__ in {None, ""}:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts._global_defaults import (
+    default_global_defaults,
+    export_global_defaults,
+    global_defaults_path,
+    import_global_defaults,
+    load_global_defaults,
+    save_global_defaults,
+    seed_missing_project_defaults,
+)
+from scripts._preview_pairing import evaluate_preview_pair_state
 from scripts._shared import dump_json, emit_json, load_json, project_path, run_python_script
 from scripts._task_contract import (
     dump_task_contract,
@@ -166,6 +176,55 @@ def decision_review_items(summary_payload: dict[str, object]) -> list[object]:
     return decisions if isinstance(decisions, list) else []
 
 
+def should_enforce_preview_pair(summary_payload: dict[str, object]) -> bool:
+    template_recommendation = summary_payload.get("template_recommendation", {})
+    if isinstance(template_recommendation, dict) and (
+        template_recommendation.get("pending_acceptance")
+        or template_recommendation.get("recommended_template")
+    ):
+        return True
+    decisions = decision_review_items(summary_payload)
+    style_decisions = {
+        "template style recommendation pending",
+        "template outline semantics incomplete",
+        "list style semantics unresolved",
+    }
+    return any(str(item) in style_decisions for item in decisions)
+
+
+def preview_pair_state(summary_payload: dict[str, object], project_root: Path) -> dict[str, object]:
+    recommendation_path = project_path(project_root, "logs/template_style_recommendation.json")
+    recommendation_payload = (
+        load_json(recommendation_path) if recommendation_path.exists() else None
+    )
+    if not should_enforce_preview_pair(summary_payload):
+        return {
+            "pair_state": "matched",
+            "issue_kinds": [],
+            "next_step": str(summary_payload.get("task_contract", {}).get("next_step", "")),
+            "pairing": summary_payload.get("pairing"),
+        }
+    return evaluate_preview_pair_state(
+        project_root,
+        recommendation_payload=recommendation_payload,
+        preview_summary=summary_payload,
+    )
+
+
+def preview_pair_issues(pair_state_payload: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {
+            "kind": kind,
+            "details": pair_state_payload.get("pairing")
+            if kind == "missing_pairing_metadata"
+            else pair_state_payload.get("mismatch_fields", [])
+            if kind == "mismatched_preview_pair"
+            else "preview/recommendation artifacts are stale or incomplete",
+        }
+        for kind in pair_state_payload.get("issue_kinds", [])
+    ]
+
+
 def report_profile(task_contract: dict[str, object]) -> str:
     decisions = task_contract.get("decisions", {})
     if not isinstance(decisions, dict):
@@ -272,6 +331,114 @@ def verify_issue_list(payload: dict[str, Any]) -> list[dict[str, object]]:
     return issues
 
 
+def handle_defaults_onboard(
+    project_root: Path,
+    *,
+    use_defaults: bool,
+    customize: bool,
+    source: str | None = None,
+    target: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    if not use_defaults and not customize:
+        use_defaults = True
+
+    init_args: list[str] = []
+    if source:
+        init_args.extend(["--template", source, "--reference-template", source])
+    init_result = run_repo_script("init_project.py", project_root, *init_args)
+    if init_result["returncode"] != 0:
+        return error_from_script("defaults-onboard", "init_project.py", init_result)
+
+    defaults_payload = default_global_defaults()
+    if source:
+        defaults_payload["templates"] = {
+            "template_source": str(Path(source).resolve()),
+            "reference_template_source": str(Path(source).resolve()),
+        }
+
+    artifacts: dict[str, object] = {}
+    if customize:
+        recommendation_result = run_repo_script("recommend_template_styles.py", project_root)
+        if recommendation_result["returncode"] != 0:
+            return error_from_script(
+                "defaults-onboard", "recommend_template_styles.py", recommendation_result
+            )
+        preview_result = run_repo_script(
+            "build_preview.py",
+            project_root,
+            "--preview-output",
+            "out/defaults-preview.docx",
+        )
+        if preview_result["returncode"] != 0:
+            return error_from_script("defaults-onboard", "build_preview.py", preview_result)
+        defaults_preview = project_path(project_root, "out/defaults-preview.docx")
+        defaults_summary = project_path(project_root, "out/defaults-preview.summary.json")
+        if not defaults_preview.exists() or not defaults_summary.exists():
+            return 2, response(
+                "defaults-onboard",
+                "error",
+                "Defaults customization requires a generated DOCX preview",
+                issues=[{"kind": "missing_defaults_preview", "details": "customize path did not generate defaults preview artifacts"}],
+                next_step="inspect_defaults_preview_generation",
+            )
+        artifacts["defaults_preview"] = "./out/defaults-preview.docx"
+        artifacts["defaults_preview_summary"] = "./out/defaults-preview.summary.json"
+        defaults_payload["templates"] = {
+            "template_source": str((project_root / "templates" / "template.user.docx").resolve()),
+            "reference_template_source": str((project_root / "templates" / "reference.user.docx").resolve()),
+        }
+
+    destination = Path(target).resolve() if target else None
+    saved_path = save_global_defaults(defaults_payload, destination)
+    artifacts["global_defaults"] = str(saved_path)
+    return 0, response(
+        "defaults-onboard",
+        "ok",
+        "Global defaults configured" if use_defaults else "Customized global defaults configured",
+        artifacts=artifacts,
+        next_step="done",
+    )
+
+
+def handle_defaults_status(project_root: Path) -> tuple[int, dict[str, object]]:
+    defaults_payload = load_global_defaults()
+    defaults_path = None
+    if defaults_payload is not None:
+        defaults_path = str(global_defaults_path())
+    return 0, response(
+        "defaults-status",
+        "ok",
+        "Global defaults found" if defaults_payload else "Global defaults not configured",
+        artifacts={
+            "global_defaults_path": defaults_path or "",
+            "global_defaults": defaults_payload or {},
+        },
+        next_step="defaults-onboard" if defaults_payload is None else "done",
+    )
+
+
+def handle_defaults_import(source: str) -> tuple[int, dict[str, object]]:
+    saved_path = import_global_defaults(Path(source).resolve())
+    return 0, response(
+        "defaults-import",
+        "ok",
+        "Global defaults imported",
+        artifacts={"global_defaults": str(saved_path)},
+        next_step="done",
+    )
+
+
+def handle_defaults_export(target: str) -> tuple[int, dict[str, object]]:
+    exported_path = export_global_defaults(Path(target).resolve())
+    return 0, response(
+        "defaults-export",
+        "ok",
+        "Global defaults exported",
+        artifacts={"exported_defaults": str(exported_path)},
+        next_step="done",
+    )
+
+
 def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     workflow_path = project_path(project_root, "workflow.json")
     if not workflow_path.exists():
@@ -280,6 +447,10 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
             return error_from_script("prepare", "init_project.py", init_result)
 
     sync_template_authority_mirrors(project_root)
+    task_contract = load_task_contract(task_contract_path(project_root))
+    if seed_missing_project_defaults(project_root, task_contract=task_contract):
+        dump_task_contract(task_contract_path(project_root), task_contract)
+        sync_template_authority_mirrors(project_root)
 
     fields_result = run_repo_script("list_private_fields.py", project_root)
     if fields_result["returncode"] != 0 or fields_result["json"] is None:
@@ -301,6 +472,7 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     blocking = blocking_review_items(summary_payload)
     decisions = decision_review_items(summary_payload)
     warnings = advisory_review_warnings(summary_payload)
+    pair_state_payload = preview_pair_state(summary_payload, project_root)
     profile = report_profile(task_contract)
     task_contract = sync_prepare_task_contract(project_root, blocking)
     summary = (
@@ -331,19 +503,37 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     ]
     payload = response(
         "prepare",
-        "ok",
+        "ok"
+        if pair_state_payload["pair_state"] == "matched"
+        else "needs_user_confirmation"
+        if pair_state_payload["pair_state"] in {"stale", "mismatched"}
+        else "needs_agent_handoff"
+        if pair_state_payload["pair_state"] == "missing"
+        and should_enforce_preview_pair(summary_payload)
+        else "ok",
         summary,
         artifacts={
             "workflow": "./workflow.json",
             "preview": repo_relative(project_root, preview_path),
             "preview_summary": repo_relative(project_root, summary_path),
             "private_fields": fields_result["json"],
+            "template_recommendation": "./logs/template_style_recommendation.json"
+            if project_path(project_root, "logs/template_style_recommendation.json").exists()
+            else "",
+            "pairing": pair_state_payload.get("pairing") or {},
+            "pair_state": pair_state_payload["pair_state"],
         },
-        issues=issues,
+        issues=issues + preview_pair_issues(pair_state_payload),
         warnings=warnings,
-        next_step=str(task_contract["runtime"]["next_step"]),
+        next_step=(
+            "preview"
+            if pair_state_payload["pair_state"] in {"stale", "mismatched", "missing"}
+            and should_enforce_preview_pair(summary_payload)
+            else str(task_contract["runtime"]["next_step"])
+        ),
     )
-    return 0, payload
+    exit_code = 0 if payload["status"] == "ok" else 1 if payload["status"] == "needs_user_confirmation" else 2
+    return exit_code, payload
 
 
 def handle_bootstrap(project_root: Path) -> tuple[int, dict[str, object]]:
@@ -376,27 +566,46 @@ def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
         )
 
     summary_payload = load_json(summary_path)
+    pair_state_payload = preview_pair_state(summary_payload, project_root)
     task_contract = load_task_contract(task_contract_path(project_root))
     blocking = blocking_review_items(summary_payload)
     decisions = decision_review_items(summary_payload)
     warnings = advisory_review_warnings(summary_payload)
     profile = report_profile(task_contract)
-    if blocking:
+    recommendation_pending = bool(
+        isinstance(summary_payload.get("template_recommendation"), dict)
+        and summary_payload["template_recommendation"].get("pending_acceptance")
+    )
+    if blocking or recommendation_pending or pair_state_payload["pair_state"] != "matched":
         task_contract = sync_prepare_task_contract(project_root, blocking)
         return 1, response(
             "ready",
             "needs_user_confirmation",
-            "Ready gate blocked by unresolved confirmations",
-            artifacts={"preview_summary": "./out/preview.summary.json"},
+            "Ready gate blocked by unresolved confirmations"
+            if blocking
+            else "Ready gate blocked until recommendation and preview artifacts are current",
+            artifacts={
+                "preview_summary": "./out/preview.summary.json",
+                "pairing": pair_state_payload.get("pairing") or {},
+                "pair_state": pair_state_payload["pair_state"],
+            },
             issues=[
                 {
                     "kind": "confirmation_required",
                     "details": item,
                 }
                 for item in blocking
-            ],
+            ]
+            + (
+                [{"kind": "template_recommendation_pending", "details": "review preview and accept or reject the recommended template"}]
+                if recommendation_pending
+                else []
+            )
+            + preview_pair_issues(pair_state_payload),
             warnings=warnings,
-            next_step=str(task_contract["runtime"]["next_step"]),
+            next_step="preview"
+            if recommendation_pending or pair_state_payload["pair_state"] != "matched"
+            else str(task_contract["runtime"]["next_step"]),
         )
 
     task_contract = persist_task_contract(
@@ -411,7 +620,11 @@ def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
         "ready",
         "ok",
         "Report task marked ready_to_write",
-        artifacts={"preview_summary": "./out/preview.summary.json"},
+        artifacts={
+            "preview_summary": "./out/preview.summary.json",
+            "pairing": pair_state_payload.get("pairing") or {},
+            "pair_state": pair_state_payload["pair_state"],
+        },
         warnings=(
             (["body_only profile active; cover-field noise treated as advisory"] if profile == "body_only" else [])
             + warnings
@@ -428,6 +641,11 @@ def handle_status(project_root: Path) -> tuple[int, dict[str, object]]:
     if summary_path.exists():
         artifacts["preview_summary"] = "./out/preview.summary.json"
         summary_payload = load_json(summary_path)
+        pair_state_payload = preview_pair_state(summary_payload, project_root)
+        artifacts["pairing"] = pair_state_payload.get("pairing") or {}
+        artifacts["pair_state"] = pair_state_payload["pair_state"]
+        if project_path(project_root, "logs/template_style_recommendation.json").exists():
+            artifacts["template_recommendation"] = "./logs/template_style_recommendation.json"
         blocking = blocking_review_items(summary_payload)
         decisions = decision_review_items(summary_payload)
         warnings = advisory_review_warnings(summary_payload)
@@ -449,6 +667,8 @@ def handle_status(project_root: Path) -> tuple[int, dict[str, object]]:
             summary = "Workflow is in body_only profile; no blocking confirmations"
         else:
             summary = "Workflow has no blocking confirmations"
+        if pair_state_payload["pair_state"] in {"missing", "stale", "mismatched"}:
+            summary = f"Workflow preview/recommendation pair is {pair_state_payload['pair_state']}; preview must be refreshed before ready"
         return 0, response(
             "status",
             "ok",
@@ -467,12 +687,16 @@ def handle_status(project_root: Path) -> tuple[int, dict[str, object]]:
                     "details": item,
                 }
                 for item in decisions
-            ],
+            ]
+            + preview_pair_issues(pair_state_payload),
             warnings=(
                 (["body_only profile active; cover-field noise treated as advisory"] if profile == "body_only" else [])
                 + warnings
             ),
-            next_step=str(task_contract.get("runtime", {}).get("next_step", "")),
+            next_step="preview"
+            if pair_state_payload["pair_state"] in {"missing", "stale", "mismatched"}
+            and should_enforce_preview_pair(summary_payload)
+            else str(task_contract.get("runtime", {}).get("next_step", "")),
         )
 
     return 0, response(
@@ -503,10 +727,15 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
 
     summary_path = project_path(project_root, "out/preview.summary.json")
     summary_payload = load_json(summary_path) if summary_path.exists() else {}
+    pair_state_payload = preview_pair_state(summary_payload, project_root)
     warnings = advisory_review_warnings(summary_payload)
     decisions = decision_review_items(summary_payload)
     needs_confirmation = blocking_review_items(summary_payload)
-    if verify_result["returncode"] == 0 and not needs_confirmation:
+    if (
+        verify_result["returncode"] == 0
+        and not needs_confirmation
+        and pair_state_payload["pair_state"] == "matched"
+    ):
         task_contract = sync_prepare_task_contract(project_root, [])
         return 0, response(
             "preview",
@@ -515,6 +744,8 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
             artifacts={
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
+                "pairing": pair_state_payload.get("pairing") or {},
+                "pair_state": pair_state_payload["pair_state"],
             },
             issues=[
                 {
@@ -536,6 +767,8 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
             artifacts={
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
+                "pairing": pair_state_payload.get("pairing") or {},
+                "pair_state": pair_state_payload["pair_state"],
             },
             issues=[
                 {
@@ -543,9 +776,12 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                     "details": item,
                 }
                 for item in needs_confirmation
-            ],
+            ]
+            + preview_pair_issues(pair_state_payload),
             warnings=warnings,
-            next_step=str(task_contract["runtime"]["next_step"]),
+            next_step="preview"
+            if pair_state_payload["pair_state"] in {"missing", "stale", "mismatched"}
+            else str(task_contract["runtime"]["next_step"]),
         )
 
     issues = verify_issue_list(verify_result["json"])
@@ -810,6 +1046,24 @@ def main() -> int:
     cleanup_parser.add_argument("--temp", action="store_true")
     cleanup_parser.add_argument("--logs", action="store_true")
 
+    defaults_onboard_parser = subparsers.add_parser("defaults-onboard")
+    defaults_onboard_parser.add_argument("--project-root", default=".")
+    defaults_onboard_parser.add_argument("--use-defaults", action="store_true")
+    defaults_onboard_parser.add_argument("--customize", action="store_true")
+    defaults_onboard_parser.add_argument("--source")
+    defaults_onboard_parser.add_argument("--target")
+
+    defaults_status_parser = subparsers.add_parser("defaults-status")
+    defaults_status_parser.add_argument("--project-root", default=".")
+
+    defaults_import_parser = subparsers.add_parser("defaults-import")
+    defaults_import_parser.add_argument("--project-root", default=".")
+    defaults_import_parser.add_argument("--source", required=True)
+
+    defaults_export_parser = subparsers.add_parser("defaults-export")
+    defaults_export_parser.add_argument("--project-root", default=".")
+    defaults_export_parser.add_argument("--target", required=True)
+
     args = parser.parse_args()
     project_root = Path(getattr(args, "project_root", ".")).resolve()
 
@@ -829,6 +1083,20 @@ def main() -> int:
         exit_code, payload = handle_verify(project_root, args.target)
     elif args.action == "inject":
         exit_code, payload = handle_inject(project_root, args.source)
+    elif args.action == "defaults-onboard":
+        exit_code, payload = handle_defaults_onboard(
+            project_root,
+            use_defaults=args.use_defaults,
+            customize=args.customize,
+            source=args.source,
+            target=args.target,
+        )
+    elif args.action == "defaults-status":
+        exit_code, payload = handle_defaults_status(project_root)
+    elif args.action == "defaults-import":
+        exit_code, payload = handle_defaults_import(args.source)
+    elif args.action == "defaults-export":
+        exit_code, payload = handle_defaults_export(args.target)
     else:
         exit_code, payload = handle_cleanup(project_root, args.temp, args.logs)
 
