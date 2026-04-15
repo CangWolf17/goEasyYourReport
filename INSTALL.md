@@ -32,8 +32,9 @@ uv sync
 1. 把它当成完整工作区，而不是只摘取某个脚本。
 2. 保留 `user/`、`templates/`、`config/`、`docs/`、`out/`、`logs/`、`temp/` 的目录语义。
 3. 把 `scripts/workflow_agent.py` 视为稳定 facade。
-4. 把 `workflow.json` 视为运行时总契约。
-5. 把 `report.task.yaml` 视为任务状态、handoff 和高层控制面的入口。
+4. 把 `config/template.plan.json.selection.primary_template` 视为唯一 runtime template authority。
+5. 把 `workflow.json` 视为 facade 的路径 / seed contract，不要把它当成运行时选模板开关。
+6. 把 `report.task.yaml` 视为任务状态、handoff 和高层控制面的入口，不要把 `inputs.template_path` 当成渲染器 authority。
 
 ## 4. 首次接手时先读什么
 建议顺序：
@@ -129,7 +130,36 @@ uv run python scripts/workflow_agent.py <action> --project-root .
 - `2`：阻塞错误
 
 ## 8. 完整配置契约
-### 8.1 `report.task.yaml`
+### 8.1 `config/template.plan.json.selection.primary_template`
+这是唯一 runtime template authority，负责告诉 `scan / preview / build / verify` 当前到底使用哪一个模板。
+
+要点：
+- 真正要切换当前生效模板时，改这里，或者通过 recommendation apply 去更新这里。
+- `prepare` / `bootstrap` 会把这里同步到其它 mirror surface。
+- pending recommendation 只是建议，不会自动改 authority。
+
+### 8.2 `workflow.json.templates.main_template`
+这是 seed/default mirror，主要用于：
+- 初始化 / bootstrap 时把默认模板播种到 `./templates/template.user.docx`
+- 让 facade 和工作区路径约定有稳定默认值
+
+不要指望：
+- 在项目初始化后仅修改 `workflow.json.templates.main_template` 就切换当前渲染模板
+- 把它当成与 `selection.primary_template` 并列的 co-authority
+
+### 8.3 `report.task.yaml.inputs.template_path`
+这是 task-contract mirror，负责把“当前任务以为自己在用什么模板”暴露给用户和 handoff。
+
+它适合：
+- 记录任务态
+- 给用户 / agent 看当前项目上下文
+- 在 `prepare` / `bootstrap` 后被同步刷新
+
+它不适合：
+- 直接驱动渲染器选模板
+- 绕过 `config/template.plan.json.selection.primary_template`
+
+### 8.4 `report.task.yaml`
 这是高层任务契约，负责：
 - 任务阶段
 - `ready_to_write`
@@ -145,14 +175,15 @@ uv run python scripts/workflow_agent.py <action> --project-root .
 - `agent_may_write_explanatory_text`
 - `default_template_protected`
 
-### 8.2 Agent 可控项
+### 8.5 Agent 可控项
 agent 平时应优先控制这些面：
+- `config/template.plan.json.selection.primary_template`（仅当你明确要切换当前生效模板时）
 - `report.task.yaml` 里的任务阶段、输入路径和高层决策
 - `docs/task_requirements.md`、`docs/document_requirements.md`、`docs/report_body.md`
 - `config/template.plan.json` 与 `config/field.binding.json` 中已经暴露的工作区状态
 - `templates/template.user.docx` 之外的材料输入，比如参考文献、图片、证据包
 
-### 8.3 不能直接当参数改的东西
+### 8.6 不能直接当参数改的东西
 以下内容属于框架能力，不应通过“删除部件”来定制：
 - 标题、列表、表格、图片、代码块、公式、目录、交叉引用、参考文献等渲染部件
 - DOCX integrity、verify、inject 的流程部件
@@ -163,6 +194,11 @@ agent 平时应优先控制这些面：
 - 如果当前正式参数面不够，再扩展契约，不要绕开框架直接 patch 运行路径
 - 图片兼容回退生成的中间文件应位于 `temp/generated-images/`，它们是可再生构建产物，不是用户源材料
 
+### 8.7 常见误区 / pitfalls
+- **误区 1：** 改 `workflow.json.templates.main_template` 就能切运行时模板。**事实：** 运行时只认 `config/template.plan.json.selection.primary_template`。
+- **误区 2：** 改 `report.task.yaml.inputs.template_path` 就能驱动渲染器。**事实：** 这是 task/handoff mirror，不是 runtime selector。
+- **误区 3：** recommendation 一生成就已经接管模板。**事实：** pending recommendation 只是信息；只有 apply 才会切 authority。
+
 ## 9. 默认模板与风格边界
 - `default template` 是受保护基线。
 - agent 可以根据任务调整高层决策，但不应把默认模板当成普通输出文件来随意重写。
@@ -172,13 +208,14 @@ agent 平时应优先控制这些面：
 建议顺序（默认 guarded path）：
 
 1. 收集需求、模板、任务书、参考资料、图片等输入。
-2. 更新 `report.task.yaml` 的高层决策和输入路径。
-3. 运行 `prepare`。
-4. 如需快速查看当前状态，运行 `status` 检查 blocking confirmations 与 advisory warnings。
-5. 在真正满足写作条件后，运行 `ready` 或手动把任务推进到 `ready_to_write`。
-6. 运行 `build`。
-7. 运行 `verify`。
-8. 仅在 `redacted` 结果通过后运行 `inject`。
+2. 如需切换当前生效模板，更新 `config/template.plan.json.selection.primary_template`，或应用推荐模板。
+3. 更新 `report.task.yaml` 的高层决策和输入路径。
+4. 运行 `prepare`，让 mirror surfaces 与预览摘要同步。
+5. 如需快速查看当前状态，运行 `status` 检查 blocking confirmations 与 advisory warnings。
+6. 在真正满足写作条件后，运行 `ready` 或手动把任务推进到 `ready_to_write`。
+7. 运行 `build`。
+8. 运行 `verify`。
+9. 仅在 `redacted` 结果通过后运行 `inject`。
 
 `preview` 是可选的显式路径：当你想单独刷新预览文档、查看预览验证结果，或在 build 前先检查 preview 包时再运行。
 

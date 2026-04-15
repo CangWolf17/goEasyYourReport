@@ -12,7 +12,7 @@ The build path can automatically rescue some problematic source images by genera
 ## Quick Start / Default Path
 
 Default path:
-1. Read `report.task.yaml` and `workflow.json`.
+1. Read `report.task.yaml` and `workflow.json` for task context, then confirm the effective template in `config/template.plan.json.selection.primary_template`.
 2. Update the writable inputs:
    - `docs/task_requirements.md`
    - `docs/document_requirements.md`
@@ -53,6 +53,13 @@ What is usually advisory:
 - `issues` with `decision_required` for non-blocking decisions
 - `warnings` for advisory noise
 
+## Template Authority Quick Rule
+
+- Effective runtime template: `config/template.plan.json.selection.primary_template`
+- `workflow.json.templates.main_template`: seed/default mirror only
+- `report.task.yaml.inputs.template_path`: task/handoff mirror only
+- Pending recommendation does **not** switch authority; only apply does
+
 ## Common Variants
 
 ### Body-only / assignment report
@@ -88,6 +95,7 @@ uv run python scripts\workflow_agent.py inject --project-root . --source temp\pr
 ## Agent Guardrails
 
 You can safely control:
+- `config/template.plan.json.selection.primary_template` when you intentionally need to switch the active template
 - `report.task.yaml` stage, input paths, and high-level decisions
 - `docs/task_requirements.md`
 - `docs/document_requirements.md`
@@ -95,6 +103,7 @@ You can safely control:
 - template-external materials such as images, references, and evidence packs
 
 Do not:
+- treat `workflow.json.templates.main_template` or `report.task.yaml.inputs.template_path` as runtime selectors
 - delete framework rendering parts to customize behavior
 - silently rewrite the `default template`
 - read private field values directly or reopen `out/private.docx`
@@ -107,6 +116,8 @@ Ask the user only when:
 ## Required Contracts
 
 - `report.task.yaml` is the durable entrypoint and handoff file.
+- `config/template.plan.json.selection.primary_template` is the only runtime template authority.
+- `workflow.json.templates.main_template` is a seed/default mirror; `report.task.yaml.inputs.template_path` is a task mirror.
 - `Build blocked until report.task.yaml marks the task as ready_to_write.`
 - `build` includes a `DOCX integrity gate`; if it fails, expect `docx_integrity_error` and stop before `verify` or `inject`.
 - `prepare` / `preview` surface `semantic template scan`, `style-gap confirmation`, `TOC / reference-block detection in preview`, and `semantic style recommendation before build`.
