@@ -578,6 +578,122 @@ def fallback_list_text(block: dict[str, object]) -> str:
     return f"{indent}- {text}"
 
 
+def style_numbering_num_id(paragraph) -> int | None:
+    style = getattr(paragraph, "style", None)
+    if style is None:
+        return None
+    p_pr = style.element.find(word_qn("w:pPr"))
+    if p_pr is None:
+        return None
+    num_pr = p_pr.find(word_qn("w:numPr"))
+    if num_pr is None:
+        return None
+    num_id = num_pr.find(word_qn("w:numId"))
+    if num_id is None:
+        return None
+    value = num_id.get(word_qn("w:val"))
+    return int(value) if value is not None else None
+
+
+def numbering_root(paragraph):
+    numbering_part = getattr(paragraph.part, "numbering_part", None)
+    if numbering_part is None:
+        return None
+    return numbering_part.numbering_definitions._numbering
+
+
+def abstract_num_id_for_num(numbering, num_id: int) -> int | None:
+    for num in numbering.findall(word_qn("w:num")):
+        if num.get(word_qn("w:numId")) != str(num_id):
+            continue
+        abstract = num.find(word_qn("w:abstractNumId"))
+        if abstract is None:
+            return None
+        value = abstract.get(word_qn("w:val"))
+        return int(value) if value is not None else None
+    return None
+
+
+def clone_numbering_sequence(numbering, abstract_num_id: int, start_at: int) -> int:
+    next_num_id = max(
+        (int(num.get(word_qn("w:numId"))) for num in numbering.findall(word_qn("w:num"))),
+        default=0,
+    ) + 1
+    num = create_word_element("w:num")
+    num.set(word_qn("w:numId"), str(next_num_id))
+
+    abstract = create_word_element("w:abstractNumId")
+    abstract.set(word_qn("w:val"), str(abstract_num_id))
+    num.append(abstract)
+
+    lvl_override = create_word_element("w:lvlOverride")
+    lvl_override.set(word_qn("w:ilvl"), "0")
+    start_override = create_word_element("w:startOverride")
+    start_override.set(word_qn("w:val"), str(max(start_at, 1)))
+    lvl_override.append(start_override)
+    num.append(lvl_override)
+
+    numbering.append(num)
+    return next_num_id
+
+
+def set_paragraph_numbering(paragraph, num_id: int) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = p_pr.find(word_qn("w:numPr"))
+    if num_pr is None:
+        num_pr = create_word_element("w:numPr")
+        p_pr.append(num_pr)
+
+    ilvl = num_pr.find(word_qn("w:ilvl"))
+    if ilvl is None:
+        ilvl = create_word_element("w:ilvl")
+        num_pr.append(ilvl)
+    ilvl.set(word_qn("w:val"), "0")
+
+    num_id_element = num_pr.find(word_qn("w:numId"))
+    if num_id_element is None:
+        num_id_element = create_word_element("w:numId")
+        num_pr.append(num_id_element)
+    num_id_element.set(word_qn("w:val"), str(num_id))
+
+
+def apply_ordered_list_numbering(
+    paragraph,
+    block: dict[str, object],
+    ordered_list_state: dict[int, dict[str, int]],
+) -> None:
+    base_num_id = style_numbering_num_id(paragraph)
+    numbering = numbering_root(paragraph)
+    if base_num_id is None or numbering is None:
+        return
+
+    depth = max(int(block.get("depth", 0) or 0), 0)
+    number = max(int(block.get("number", 1) or 1), 1)
+    for stale_depth in [value for value in ordered_list_state if value > depth]:
+        ordered_list_state.pop(stale_depth, None)
+
+    state = ordered_list_state.get(depth)
+    if (
+        state is None
+        or state.get("base_num_id") != base_num_id
+        or number != state.get("last_number", 0) + 1
+    ):
+        abstract_num_id = abstract_num_id_for_num(numbering, base_num_id)
+        if abstract_num_id is None:
+            return
+        current_num_id = clone_numbering_sequence(numbering, abstract_num_id, number)
+        ordered_list_state[depth] = {
+            "base_num_id": base_num_id,
+            "num_id": current_num_id,
+            "last_number": number,
+        }
+    else:
+        current_num_id = int(state["num_id"])
+        state["last_number"] = number
+
+    set_paragraph_numbering(paragraph, current_num_id)
+
+
 def apply_image_block(
     paragraph,
     block: dict[str, object],
@@ -778,6 +894,7 @@ def render_blocks(
         and blocks[0].get("kind") == "heading"
         and int(blocks[0].get("level", 1)) == 1
     )
+    ordered_list_state: dict[int, dict[str, int]] = {}
 
     def normalized_block(
         block: dict[str, object], block_index: int
@@ -875,6 +992,10 @@ def render_blocks(
                 equation_status=equation_status,
             )
             used_last = current
+            if first_block.get("kind") == "list_item" and first_block.get("ordered"):
+                apply_ordered_list_numbering(
+                    used_last, first_block, ordered_list_state
+                )
         if (
             reference_output_enabled
             and in_reference_section
@@ -961,6 +1082,8 @@ def render_blocks(
                 forced_style=forced_style or paragraph_style_for_block(block),
                 equation_status=equation_status,
             )
+            if block.get("kind") == "list_item" and block.get("ordered"):
+                apply_ordered_list_numbering(used_last, block, ordered_list_state)
             if (
                 reference_output_enabled
                 and in_reference_section

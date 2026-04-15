@@ -40,6 +40,7 @@ STYLE_XML_NAMESPACES = {
     "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
     "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
 }
+WORD_XML_NAMESPACES = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
 class RepoTemporaryDirectory:
@@ -176,6 +177,31 @@ def run_font_settings(run) -> dict[str, object]:
         "eastAsia": None if rfonts is None else rfonts.get(qn("w:eastAsia")),
         "size": None if size is None else size.get(qn("w:val")),
     }
+
+
+def paragraph_numbering_id(paragraph) -> str | None:
+    num_id = paragraph._p.find(".//w:numPr/w:numId", WORD_XML_NAMESPACES)
+    if num_id is None:
+        return None
+    return num_id.get(qn("w:val"))
+
+
+def numbering_start_overrides(path: Path) -> dict[str, int]:
+    with zipfile.ZipFile(path, "r") as docx_zip:
+        numbering_xml = docx_zip.read("word/numbering.xml")
+
+    root = ET.fromstring(numbering_xml)
+    overrides: dict[str, int] = {}
+    for num in root.findall("w:num", WORD_XML_NAMESPACES):
+        num_id = num.get(qn("w:numId"))
+        start_override = num.find(
+            "w:lvlOverride/w:startOverride", WORD_XML_NAMESPACES
+        )
+        if num_id and start_override is not None:
+            value = start_override.get(qn("w:val"))
+            if value is not None:
+                overrides[num_id] = int(value)
+    return overrides
 
 
 def set_explicit_run_font(
@@ -1380,6 +1406,193 @@ class InitProjectTests(unittest.TestCase):
             self.assertIn(("First number", "列表编号"), rendered)
             self.assertIn(("Second number", "列表编号"), rendered)
 
+    def test_build_report_restarts_ordered_lists_after_intervening_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Items\n\n1. A\n2. B\n\nParagraph\n\n1. C\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_path = project_root / "out" / "redacted.docx"
+            redacted_doc = docx.Document(redacted_path)
+            ordered = {
+                paragraph.text.strip(): paragraph_numbering_id(paragraph)
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip() in {"A", "B", "C"}
+            }
+
+            self.assertEqual(ordered["A"], ordered["B"])
+            self.assertNotEqual(ordered["B"], ordered["C"])
+            self.assertEqual(
+                numbering_start_overrides(redacted_path)[ordered["C"]],
+                1,
+            )
+
+    def test_build_report_restarts_ordered_lists_after_separate_list_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Items\n\n1. A\n2. B\n\n1. C\n2. D\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_path = project_root / "out" / "redacted.docx"
+            redacted_doc = docx.Document(redacted_path)
+            ordered = {
+                paragraph.text.strip(): paragraph_numbering_id(paragraph)
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip() in {"A", "B", "C", "D"}
+            }
+
+            self.assertEqual(ordered["A"], ordered["B"])
+            self.assertEqual(ordered["C"], ordered["D"])
+            self.assertNotEqual(ordered["B"], ordered["C"])
+            self.assertEqual(
+                numbering_start_overrides(redacted_path)[ordered["C"]],
+                1,
+            )
+
+    def test_build_report_preserves_custom_ordered_list_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Items\n\n3. C\n4. D\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_path = project_root / "out" / "redacted.docx"
+            redacted_doc = docx.Document(redacted_path)
+            ordered = {
+                paragraph.text.strip(): paragraph_numbering_id(paragraph)
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip() in {"C", "D"}
+            }
+
+            self.assertEqual(ordered["C"], ordered["D"])
+            self.assertEqual(
+                numbering_start_overrides(redacted_path)[ordered["C"]],
+                3,
+            )
+
+    def test_build_report_keeps_top_level_ordered_list_sequence_across_nested_items(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Items\n\n1. Parent A\n  1. Child one\n  2. Child two\n2. Parent B\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            ordered = {
+                paragraph.text.strip(): paragraph_numbering_id(paragraph)
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+                in {"Parent A", "Parent B", "Child one", "Child two"}
+            }
+
+            self.assertEqual(ordered["Parent A"], ordered["Parent B"])
+            self.assertEqual(ordered["Child one"], ordered["Child two"])
+            self.assertNotEqual(ordered["Parent A"], ordered["Child one"])
+
     def test_build_report_lists_inherit_body_font_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -1477,6 +1690,57 @@ class InitProjectTests(unittest.TestCase):
             self.assertIn("- Second bullet", rendered_texts)
             self.assertIn("1. First number", rendered_texts)
             self.assertIn("2. Second number", rendered_texts)
+
+    def test_build_report_restarts_fallback_ordered_markers_without_list_styles(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            source_template = project_root / "voice-template.docx"
+            write_style_poor_template(source_template)
+            strip_list_styles(source_template)
+
+            init_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(PROJECT_ROOT / "scripts" / "init_project.py"),
+                    "--project-root",
+                    str(project_root),
+                    "--template",
+                    str(source_template),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+            (project_root / "docs" / "report_body.md").write_text(
+                "## Items\n\n1. A\n2. B\n\nParagraph\n\n1. C\n",
+                encoding="utf-8",
+            )
+
+            build_result = subprocess.run(
+                [
+                    str(PYTHON),
+                    str(project_root / "scripts" / "build_report.py"),
+                    "--project-root",
+                    str(project_root),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+            redacted_doc = docx.Document(project_root / "out" / "redacted.docx")
+            rendered_texts = [
+                paragraph.text.strip()
+                for paragraph in redacted_doc.paragraphs
+                if paragraph.text.strip()
+            ]
+
+            self.assertIn("1. A", rendered_texts)
+            self.assertIn("2. B", rendered_texts)
+            self.assertIn("1. C", rendered_texts)
 
     def test_build_report_renders_simple_pipe_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
