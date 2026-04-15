@@ -244,11 +244,12 @@ class DocxIntegrityTests(unittest.TestCase):
             "parts": [],
         }
 
+        build_report = importlib.import_module("scripts.build_report")
+        self.addCleanup(importlib.reload, build_report)
         with mock.patch(
             "scripts._docx_integrity.validate_docx_package",
             return_value=failure_report,
         ) as mock_validate:
-            build_report = importlib.import_module("scripts.build_report")
             build_report = importlib.reload(build_report)
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), mock.patch.object(
