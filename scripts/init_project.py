@@ -18,7 +18,11 @@ from scripts._shared import (
     import_docx,
     run_python_script,
 )
-from scripts._task_contract import default_task_contract, dump_task_contract
+from scripts._task_contract import (
+    default_task_contract,
+    dump_task_contract,
+    sync_template_authority_mirrors,
+)
 
 
 DEFAULT_DIRS = [
@@ -318,6 +322,8 @@ def main() -> int:
         overwrite=args.force,
     ):
         copied_templates.append(str(reference_user))
+
+    sync_template_authority_mirrors(root)
 
     script_results = [run_optional("list_private_fields.py", root)]
     if template_user.exists():

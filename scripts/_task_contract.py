@@ -4,7 +4,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from scripts._shared import dump_yaml, load_yaml
+from scripts._shared import dump_json, dump_yaml, load_json, load_yaml
+
+
+DEFAULT_PRIMARY_TEMPLATE = "./templates/template.user.docx"
 
 
 def default_task_contract() -> dict[str, object]:
@@ -24,7 +27,7 @@ def default_task_contract() -> dict[str, object]:
             "document_requirements_path": "./docs/document_requirements.md",
         },
         "inputs": {
-            "template_path": "./templates/template.user.docx",
+            "template_path": DEFAULT_PRIMARY_TEMPLATE,
             "references_dir": "./docs/references",
             "assets_dir": "./assets/input",
             "evidence_dir": "./materials/evidence",
@@ -74,3 +77,36 @@ def load_task_contract(path: Path) -> dict[str, object]:
 
 def dump_task_contract(path: Path, payload: dict[str, Any]) -> None:
     dump_yaml(path, ensure_task_contract_shape(payload))
+
+
+def resolve_primary_template(project_root: Path) -> str:
+    plan_path = project_root / "config" / "template.plan.json"
+    if not plan_path.exists():
+        return DEFAULT_PRIMARY_TEMPLATE
+    plan = load_json(plan_path)
+    selection = plan.get("selection", {})
+    if not isinstance(selection, dict):
+        return DEFAULT_PRIMARY_TEMPLATE
+    value = selection.get("primary_template")
+    return str(value).strip() if value else DEFAULT_PRIMARY_TEMPLATE
+
+
+def sync_template_authority_mirrors(project_root: Path) -> str:
+    primary_template = resolve_primary_template(project_root)
+
+    workflow_path = project_root / "workflow.json"
+    if workflow_path.exists():
+        workflow = load_json(workflow_path)
+        templates = workflow.setdefault("templates", {})
+        if isinstance(templates, dict) and templates.get("main_template") != primary_template:
+            templates["main_template"] = primary_template
+            dump_json(workflow_path, workflow)
+
+    task_path = project_root / "report.task.yaml"
+    task_contract = load_task_contract(task_path)
+    inputs = task_contract.setdefault("inputs", {})
+    if isinstance(inputs, dict) and inputs.get("template_path") != primary_template:
+        inputs["template_path"] = primary_template
+        dump_task_contract(task_path, task_contract)
+
+    return primary_template

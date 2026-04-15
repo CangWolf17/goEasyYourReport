@@ -10,7 +10,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts._shared import dump_json, emit_json, load_json, project_path, run_python_script
-from scripts._task_contract import dump_task_contract, load_task_contract
+from scripts._task_contract import (
+    dump_task_contract,
+    load_task_contract,
+    sync_template_authority_mirrors,
+)
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -274,6 +278,8 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
         init_result = run_repo_script("init_project.py", project_root)
         if init_result["returncode"] != 0:
             return error_from_script("prepare", "init_project.py", init_result)
+
+    sync_template_authority_mirrors(project_root)
 
     fields_result = run_repo_script("list_private_fields.py", project_root)
     if fields_result["returncode"] != 0 or fields_result["json"] is None:

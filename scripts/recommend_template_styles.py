@@ -21,6 +21,7 @@ from scripts._shared import (
     project_path,
     run_python_script,
 )
+from scripts._task_contract import sync_template_authority_mirrors
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -468,13 +469,16 @@ def build_recommendation_payload(
     }
 
 
-def apply_recommendation(plan_path: Path, recommendation: dict[str, object]) -> None:
+def apply_recommendation(
+    project_root: Path, plan_path: Path, recommendation: dict[str, object]
+) -> None:
     plan = load_json(plan_path)
     selection = plan.setdefault("selection", {})
     selection["primary_template"] = recommendation["recommended_template"]
     status = plan.setdefault("status", {})
     status["template_recommendation_applied"] = True
     dump_json(plan_path, plan)
+    sync_template_authority_mirrors(project_root)
 
 
 def ensure_initialized_workspace(project_root: Path, plan_path: Path) -> None:
@@ -541,7 +545,7 @@ def main() -> int:
     )
 
     if args.apply:
-        apply_recommendation(plan_path, recommendation)
+        apply_recommendation(project_root, plan_path, recommendation)
         plan = load_json(plan_path)
         recommendation = build_recommendation_payload(
             project_root,

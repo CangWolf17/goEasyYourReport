@@ -368,6 +368,50 @@ class TaskContractTests(unittest.TestCase):
         self.assertTrue((project_root / "report.task.yaml").exists())
         self.assertIn("preview_summary", payload["artifacts"])
 
+    def test_prepare_syncs_template_mirrors_from_plan(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        recommended_template = project_root / "templates" / "template.recommended.docx"
+        recommended_template.write_bytes(
+            (project_root / "templates" / "template.user.docx").read_bytes()
+        )
+
+        plan_path = project_root / "config" / "template.plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["selection"]["primary_template"] = "./templates/template.recommended.docx"
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        workflow_path = project_root / "workflow.json"
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        workflow["templates"]["main_template"] = "./templates/template.user.docx"
+        workflow_path.write_text(
+            json.dumps(workflow, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        task_contract = self.load_task_yaml(project_root)
+        task_contract["inputs"]["template_path"] = "./templates/template.user.docx"
+        self.dump_task_yaml(project_root, task_contract)
+
+        result = self.run_workflow(project_root, "prepare")
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            workflow["templates"]["main_template"],
+            "./templates/template.recommended.docx",
+        )
+        task_contract = self.load_task_yaml(project_root)
+        self.assertEqual(
+            task_contract["inputs"]["template_path"],
+            "./templates/template.recommended.docx",
+        )
+
     def test_build_preview_marks_missing_field_candidates_as_advisory_for_body_only_template(
         self,
     ) -> None:

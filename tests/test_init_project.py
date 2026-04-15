@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import docx
+import yaml
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
@@ -576,6 +577,22 @@ class InitProjectTests(unittest.TestCase):
             )
             self.assertEqual(
                 plan["selection"]["primary_template"],
+                "./templates/template.recommended.docx",
+            )
+
+            workflow = json.loads(
+                (project_root / "workflow.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                workflow["templates"]["main_template"],
+                "./templates/template.recommended.docx",
+            )
+
+            task_contract = yaml.safe_load(
+                (project_root / "report.task.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                task_contract["inputs"]["template_path"],
                 "./templates/template.recommended.docx",
             )
 
