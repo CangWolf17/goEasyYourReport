@@ -14,6 +14,7 @@ from scripts._docx_xml import (
     insert_paragraph_before,
 )
 from scripts._docx_semantics import ensure_plan_semantics
+from scripts._report_render import render_blocks
 from scripts._preview_pairing import (
     build_pairing,
     file_fingerprint,
@@ -22,6 +23,56 @@ from scripts._preview_pairing import (
 )
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
 from scripts._task_contract import load_task_contract
+
+
+def representative_preview_blocks() -> list[dict[str, object]]:
+    return [
+        {
+            "kind": "paragraph",
+            "text": "这是用于确认模板正文、列表和表格样式的预览段落。",
+        },
+        {"kind": "heading", "level": 1, "text": "样式预览：一级标题"},
+        {"kind": "heading", "level": 2, "text": "样式预览：二级标题"},
+        {"kind": "list_item", "ordered": True, "depth": 0, "text": "编号列表示例"},
+        {"kind": "list_item", "ordered": False, "depth": 0, "text": "符号列表示例"},
+        {"kind": "table", "rows": [["列A", "列B"], ["示例1", "示例2"]]},
+    ]
+
+
+def paragraph_index(doc, target_paragraph) -> int:
+    for index, paragraph in enumerate(doc.paragraphs):
+        if paragraph._p is target_paragraph._p:
+            return index
+    raise ValueError("Paragraph not found in current document")
+
+
+def inject_representative_preview_content(
+    doc,
+    *,
+    start_paragraph,
+    project_root: str,
+    semantics: dict[str, object] | None,
+) -> None:
+    preview_anchor = insert_paragraph_after(start_paragraph)
+    clear_paragraph(preview_anchor)
+    anchor_index = paragraph_index(doc, preview_anchor)
+    render_blocks(
+        doc,
+        {"start_paragraph": anchor_index, "end_paragraph": anchor_index},
+        representative_preview_blocks(),
+        Path(project_root).resolve(),
+        Path(project_root).resolve(),
+        {"name": "preview-style-sample", "warnings": [], "override_used": False},
+        {
+            "styled": 0,
+            "highlighted": 0,
+            "unsupported": [],
+            "warnings": [],
+            "theme": {"name": "preview-style-sample", "override_used": False},
+        },
+        semantics,
+        {"unsupported": []},
+    )
 
 
 def build_summary(
@@ -258,6 +309,12 @@ def main() -> int:
             clear_paragraph(original_paragraphs[idx])
         marker_end = insert_paragraph_after(end_paragraph)
         marker_end.add_run(f"[Fillable Region End] {region['id']}")
+        inject_representative_preview_content(
+            doc,
+            start_paragraph=start_paragraph,
+            project_root=args.project_root,
+            semantics=plan.get("semantics"),
+        )
     doc.save(preview_path)
 
     preview_relative = normalize_repo_relative(str(plan["selection"]["preview_output"]))

@@ -262,6 +262,34 @@ class ConfirmationPackageTests(unittest.TestCase):
         self.assertTrue(any("Locked Region" in text for text in texts))
         self.assertTrue(any("Fillable Region" in text for text in texts))
 
+    def test_build_preview_includes_representative_style_content(self) -> None:
+        project_root = self.create_project()
+        preview = self.run_json(project_root, "build_preview.py")
+
+        preview_doc = docx.Document(Path(preview["preview"]))
+        paragraphs = {
+            paragraph.text.strip(): getattr(paragraph.style, "name", "")
+            for paragraph in preview_doc.paragraphs
+            if paragraph.text.strip()
+        }
+
+        self.assertIn("【Preview Placeholder: body_main】", paragraphs)
+        self.assertEqual(paragraphs["样式预览：一级标题"], "标题2")
+        self.assertEqual(paragraphs["样式预览：二级标题"], "标题3")
+        self.assertEqual(
+            paragraphs["这是用于确认模板正文、列表和表格样式的预览段落。"],
+            "正文",
+        )
+        self.assertIn(
+            paragraphs["编号列表示例"],
+            {"列表编号", "List Number", "List Number 2", "List Paragraph"},
+        )
+        self.assertIn(
+            paragraphs["符号列表示例"],
+            {"列表符号", "List Bullet", "List Bullet 2", "List Paragraph"},
+        )
+        self.assertTrue(preview_doc.tables)
+
     def test_preview_summary_surfaces_report_task_stage(self) -> None:
         project_root = self.create_project()
 
