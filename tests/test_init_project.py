@@ -383,6 +383,8 @@ class InitProjectTests(unittest.TestCase):
                 (project_root / "templates" / "template.user.docx").exists()
             )
             self.assertTrue((project_root / "out" / "preview.docx").exists())
+            self.assertTrue((project_root / "out" / "semantic-preview.docx").exists())
+            self.assertTrue((project_root / "scripts" / "review_acceptance.py").exists())
 
             init_report = json.loads(
                 (project_root / "logs" / "init_report.json").read_text(encoding="utf-8")

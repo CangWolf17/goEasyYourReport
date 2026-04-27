@@ -36,6 +36,27 @@ class TaskContractTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def make_current_ready_to_build(self, project_root: Path) -> None:
+        plan_path = project_root / "config" / "template.plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["semantics"]["cross_references"]["figure_table_enabled"] = False
+        plan["semantics"]["bibliography"]["source_mode"] = "user_supplied_files"
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        template_path = project_root / "templates" / "template.user.docx"
+        template = docx.Document(template_path)
+        for paragraph in list(template.paragraphs[0:4]):
+            paragraph._element.getparent().remove(paragraph._element)
+        template.save(template_path)
+
+        prepare_result = self.run_workflow(project_root, "prepare")
+        self.assertEqual(prepare_result.returncode, 0, msg=prepare_result.stderr)
+        ready_result = self.run_workflow(project_root, "ready")
+        self.assertEqual(ready_result.returncode, 0, msg=ready_result.stderr)
+
     def insert_toc_placeholder(self, project_root: Path) -> None:
         template_path = project_root / "templates" / "template.user.docx"
         template = docx.Document(template_path)
@@ -95,6 +116,9 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(payload["schema"]["kind"], "report_task")
         self.assertFalse(payload["task"]["ready_to_write"])
         self.assertEqual(payload["runtime"]["workflow_config"], "./workflow.json")
+        self.assertEqual(payload["runtime"]["preview_review_status"], "unknown")
+        self.assertEqual(payload["runtime"]["redacted_verify_status"], "unknown")
+        self.assertEqual(payload["runtime"]["acceptance_status"], "unknown")
 
     def test_init_project_creates_report_task_yaml(self) -> None:
         project_root = self.create_project()
@@ -161,9 +185,11 @@ class TaskContractTests(unittest.TestCase):
         task_contract = self.load_task_yaml(project_root)
         runtime = task_contract["runtime"]
         self.assertEqual(runtime["preview_output"], "./out/preview.docx")
+        self.assertEqual(runtime["semantic_preview_output"], "./out/semantic-preview.docx")
         self.assertEqual(runtime["template_plan"], "./config/template.plan.json")
         self.assertEqual(runtime["field_binding"], "./config/field.binding.json")
         self.assertEqual(payload["next_step"], runtime["next_step"])
+        self.assertIn(runtime["preview_review_status"], {"pass", "needs_user_decision", "needs_preview_revision"})
 
         summary = self.load_preview_summary(project_root)
         self.assertEqual(summary["task_contract"]["next_step"], runtime["next_step"])
@@ -192,14 +218,12 @@ class TaskContractTests(unittest.TestCase):
         )
         self.assertFalse((project_root / "out" / "redacted.docx").exists())
 
-    def test_workflow_agent_build_allows_ready_to_write_task(self) -> None:
+    def test_workflow_agent_build_allows_current_ready_to_write_task(self) -> None:
         project_root = self.create_project()
 
         init_result = self.init_project(project_root)
         self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
-        task_contract = self.load_task_yaml(project_root)
-        task_contract["task"]["ready_to_write"] = True
-        self.dump_task_yaml(project_root, task_contract)
+        self.make_current_ready_to_build(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -254,6 +278,56 @@ class TaskContractTests(unittest.TestCase):
         task_contract = self.load_task_yaml(project_root)
         self.assertTrue(task_contract["task"]["ready_to_write"])
         self.assertEqual(task_contract["runtime"]["next_step"], "build")
+
+    def test_workflow_agent_build_invalidates_ready_when_preview_inputs_change(self) -> None:
+        project_root = self.create_project()
+        self.assertEqual(self.init_project(project_root).returncode, 0)
+        self.make_current_ready_to_build(project_root)
+
+        (project_root / "docs" / "report_body.md").write_text(
+            "# Updated Body\n\n## New Section\n\nBody changed after ready.\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["action"], "build")
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertEqual(payload["next_step"], "preview")
+        self.assertTrue(
+            any(issue["kind"] == "stale_semantic_preview" for issue in payload["issues"])
+        )
+
+        task_contract = self.load_task_yaml(project_root)
+        self.assertFalse(task_contract["task"]["ready_to_write"])
+        self.assertEqual(task_contract["runtime"]["next_step"], "preview")
+
+    def test_workflow_agent_build_invalidates_generated_semantic_preview_when_requirements_change(self) -> None:
+        project_root = self.create_project()
+        self.assertEqual(self.init_project(project_root).returncode, 0)
+        (project_root / "docs" / "report_body.md").write_text(
+            "# 摘要\n",
+            encoding="utf-8",
+        )
+        self.make_current_ready_to_build(project_root)
+        summary = self.load_preview_summary(project_root)
+        self.assertEqual(summary["semantic_preview"]["scaffold_mode"], "generated")
+
+        (project_root / "docs" / "task_requirements.md").write_text(
+            "- 新增评分点：必须强调实验结论。\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(project_root, "build")
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertTrue(
+            any(issue["kind"] == "stale_semantic_preview" for issue in payload["issues"])
+        )
 
     def test_workflow_agent_ready_refuses_when_blocking_confirmations_remain(self) -> None:
         project_root = self.create_project()
@@ -343,7 +417,7 @@ class TaskContractTests(unittest.TestCase):
 
         result = self.run_workflow(project_root, "preview")
 
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
         payload = json.loads(result.stdout)
         task_contract = self.load_task_yaml(project_root)
         summary = self.load_preview_summary(project_root)
@@ -355,6 +429,14 @@ class TaskContractTests(unittest.TestCase):
             summary["task_contract"]["ready_to_write"],
             task_contract["task"]["ready_to_write"],
         )
+        self.assertTrue((project_root / "out" / "semantic-preview.docx").exists())
+        self.assertIn("semantic_preview", summary)
+        self.assertIn(
+            task_contract["runtime"]["preview_review_status"],
+            {"pass", "needs_user_decision", "needs_preview_revision"},
+        )
+        if task_contract["runtime"]["preview_review_status"] != "pass":
+            self.assertEqual(payload["next_step"], "review_preview_summary")
 
     def test_workflow_agent_bootstrap_initializes_and_prepares_external_target(self) -> None:
         project_root = self.create_project()
@@ -482,6 +564,122 @@ class TaskContractTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
         self.assertIn("body_only profile", payload["summary"])
+
+    def test_verify_redacted_routes_to_review_and_persists_fingerprint(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+        self.make_current_ready_to_build(project_root)
+
+        build_result = self.run_workflow(project_root, "build")
+        self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+
+        verify_result = self.run_workflow(project_root, "verify", "--target", "redacted")
+        self.assertEqual(verify_result.returncode, 0, msg=verify_result.stderr)
+        payload = json.loads(verify_result.stdout)
+        self.assertEqual(payload["next_step"], "review")
+
+        task_contract = self.load_task_yaml(project_root)
+        self.assertEqual(task_contract["task"]["stage"], "awaiting_acceptance_review")
+        self.assertEqual(task_contract["runtime"]["next_step"], "review")
+        self.assertEqual(task_contract["runtime"]["redacted_verify_status"], "pass")
+        self.assertTrue(task_contract["runtime"]["redacted_verify_fingerprint"])
+        self.assertTrue((project_root / "out" / "_internal" / "redacted-verify.json").exists())
+
+    def test_review_refuses_without_current_verified_redacted_output(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        review_result = self.run_workflow(project_root, "review")
+        self.assertEqual(review_result.returncode, 1, msg=review_result.stderr)
+        payload = json.loads(review_result.stdout)
+        self.assertEqual(payload["action"], "review")
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertTrue(any(issue["kind"] == "missing_redacted_verify_pass" for issue in payload["issues"]))
+
+    def test_review_uses_stubbed_worker_output_and_unlocks_inject(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+        self.make_current_ready_to_build(project_root)
+
+        build_result = self.run_workflow(project_root, "build")
+        self.assertEqual(build_result.returncode, 0, msg=build_result.stderr)
+        verify_result = self.run_workflow(project_root, "verify", "--target", "redacted")
+        self.assertEqual(verify_result.returncode, 0, msg=verify_result.stderr)
+
+        redacted_fingerprint = self.load_task_yaml(project_root)["runtime"]["redacted_verify_fingerprint"]
+        internal_root = project_root / "out" / "_internal"
+        internal_root.mkdir(parents=True, exist_ok=True)
+        (internal_root / "review-worker-output.json").write_text(
+            json.dumps(
+                {
+                    "status": "pass",
+                    "target_fingerprint": redacted_fingerprint,
+                    "requirements_alignment": "pass",
+                    "style_alignment": "pass",
+                    "document_quality": "pass",
+                    "preview_consistency": "pass",
+                    "rerender_target": "none",
+                    "blocking_findings": [],
+                    "needs_decision": [],
+                    "evidence": ["stubbed review output"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        review_result = self.run_workflow(project_root, "review")
+        self.assertEqual(review_result.returncode, 0, msg=review_result.stderr)
+        payload = json.loads(review_result.stdout)
+        self.assertEqual(payload["status"], "ok")
+
+        task_contract = self.load_task_yaml(project_root)
+        self.assertEqual(task_contract["runtime"]["acceptance_status"], "pass")
+        self.assertEqual(task_contract["runtime"]["next_step"], "inject")
+        self.assertEqual(
+            task_contract["runtime"]["accepted_redacted_fingerprint"],
+            redacted_fingerprint,
+        )
+        self.assertTrue((project_root / "out" / "acceptance-review.json").exists())
+
+    def test_review_rejects_worker_output_without_target_fingerprint(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+        self.make_current_ready_to_build(project_root)
+
+        self.assertEqual(self.run_workflow(project_root, "build").returncode, 0)
+        self.assertEqual(
+            self.run_workflow(project_root, "verify", "--target", "redacted").returncode,
+            0,
+        )
+
+        internal_root = project_root / "out" / "_internal"
+        internal_root.mkdir(parents=True, exist_ok=True)
+        (internal_root / "review-worker-output.json").write_text(
+            json.dumps({"status": "pass"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        review_result = self.run_workflow(project_root, "review")
+        self.assertEqual(review_result.returncode, 2, msg=review_result.stderr)
+        payload = json.loads(review_result.stdout)
+        self.assertEqual(payload["status"], "error")
+
+    def test_inject_blocks_without_current_acceptance_pass(self) -> None:
+        project_root = self.create_project()
+        init_result = self.init_project(project_root)
+        self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+
+        result = self.run_workflow(project_root, "inject")
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["action"], "inject")
+        self.assertEqual(payload["status"], "needs_agent_handoff")
+        self.assertTrue(any(issue["kind"] == "acceptance_not_passed" for issue in payload["issues"]))
 
 
 if __name__ == "__main__":

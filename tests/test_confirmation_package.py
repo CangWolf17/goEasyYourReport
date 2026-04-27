@@ -189,6 +189,27 @@ class ConfirmationPackageTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def make_current_ready_to_build(self, project_root: Path) -> None:
+        plan_path = project_root / "config" / "template.plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["semantics"]["cross_references"]["figure_table_enabled"] = False
+        plan["semantics"]["bibliography"]["source_mode"] = "user_supplied_files"
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        template_path = project_root / "templates" / "template.user.docx"
+        template = docx.Document(template_path)
+        for paragraph in list(template.paragraphs[0:4]):
+            paragraph._element.getparent().remove(paragraph._element)
+        template.save(template_path)
+
+        prepare_result = self.run_workflow(project_root, "prepare")
+        self.assertEqual(prepare_result.returncode, 0, msg=prepare_result.stderr)
+        ready_result = self.run_workflow(project_root, "ready")
+        self.assertEqual(ready_result.returncode, 0, msg=ready_result.stderr)
+
     def insert_toc_placeholder(self, project_root: Path) -> None:
         template_path = project_root / "templates" / "template.user.docx"
         template = docx.Document(template_path)
@@ -354,7 +375,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             "## Code Example\n\n```python\nprint('ok')\n```",
             encoding="utf-8",
         )
-        self.set_ready_to_write(project_root)
+        self.make_current_ready_to_build(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -374,7 +395,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             '## Rust Example\n\n```rust\nfn main() {\n    println!("hi");\n}\n```',
             encoding="utf-8",
         )
-        self.set_ready_to_write(project_root)
+        self.make_current_ready_to_build(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -393,7 +414,7 @@ class ConfirmationPackageTests(unittest.TestCase):
             "## Figures\n\n![Missing](images/missing.png)\n",
             encoding="utf-8",
         )
-        self.set_ready_to_write(project_root)
+        self.make_current_ready_to_build(project_root)
 
         result = self.run_workflow(project_root, "build")
 
@@ -410,7 +431,7 @@ class ConfirmationPackageTests(unittest.TestCase):
         from scripts import workflow_agent
 
         project_root = self.create_project()
-        self.set_ready_to_write(project_root)
+        self.make_current_ready_to_build(project_root)
         build_payload = {
             "redacted": str(project_root / "out" / "redacted.docx"),
             "integrity": {
@@ -449,13 +470,24 @@ class ConfirmationPackageTests(unittest.TestCase):
         project_root = self.create_project()
         result = self.run_workflow(project_root, "preview")
 
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
         payload = json.loads(result.stdout)
         self.assert_normalized_agent_payload(payload, "preview")
-        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["status"], "needs_user_confirmation")
         self.assertTrue(
             any(issue["kind"] == "decision_required" for issue in payload["issues"])
         )
+        self.assertEqual(payload["next_step"], "review_preview_summary")
+
+    def test_repo_docs_describe_control_plane_architecture(self) -> None:
+        for text in (
+            (PROJECT_ROOT / "README.md").read_text(encoding="utf-8"),
+            (PROJECT_ROOT / "SKILL.md").read_text(encoding="utf-8"),
+            (PROJECT_ROOT / "INSTALL.md").read_text(encoding="utf-8"),
+        ):
+            self.assertIn("framework + playbook + main agent controller", text)
+            self.assertIn("subagent as function", text)
+            self.assertIn("transition table", text)
 
     def test_workflow_agent_build_blocks_on_unresolved_toc_confirmation(self) -> None:
         project_root = self.create_project()
