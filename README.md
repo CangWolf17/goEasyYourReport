@@ -9,6 +9,20 @@
 - 当前生效模板的唯一 runtime authority 是 `config/template.plan.json.selection.primary_template`。
 - `workflow.json.templates.main_template` 只是初始化 seed mirror；`report.task.yaml.inputs.template_path` 只是任务 / handoff mirror，它们都不负责运行时选模板。
 
+## 控制平面 (Phase 2)
+
+goEasyYourReport 的第二阶段把工作流拆成三层：**framework + playbook + main agent controller**。
+
+- **framework**：拥有 transition table、blocker taxonomy、artifact invalidation rules、state schema。它不知道报告业务的细节，只负责"流程如何被正确推进"。
+- **playbook**：拥有 step registry、transition table 的报告特化部分、每个 step 的 executor 映射。它是流程定义，不是临场推理。
+- **main agent controller**：读取当前状态、查 playbook、执行 step、处理 blocker。它不再拥有流程本体知识。
+
+review 类 step（如 acceptance_review）通过 **subagent as function** 适配器调用：固定 prompt template + 结构化输入/输出 + schema 校验 + fingerprint 绑定。这不是"让 agent 审阅"，而是把 subagent 当作远程函数使用。
+
+关键的 transition table 在 `scripts/_workflow_playbook.py` 里以显式数据定义，主流程状态机是：
+
+`prepare -> preview -> preview_review -> ready_gate -> build_redacted -> verify_redacted -> acceptance_review -> inject_private -> post_inject_check -> complete`
+
 ## 你会得到什么
 - 用 `report.task.yaml` 管理任务状态、输入材料路径和高层决策
 - 用 `scripts/workflow_agent.py` 作为唯一稳定入口

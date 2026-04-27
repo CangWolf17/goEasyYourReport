@@ -9,6 +9,18 @@ Use this when you need an agent-driven report workspace that turns Markdown + te
 
 The build path can automatically rescue some problematic source images by generating compatible assets under `temp/generated-images/`, preferring JPEG for photos and keeping PNG only when transparency requires it.
 
+## Control Plane Architecture
+
+This skill follows a **framework + playbook + main agent controller** split:
+
+- **Framework** (`scripts/_workflow_*.py`): Owns the transition table, blocker taxonomy, artifact invalidation rules, and state schema. Framework code governs *how* workflow steps advance — not what the report should contain.
+- **Playbook** (`scripts/_workflow_playbook.py`): Declares step sequences and transition mappings for this specific report workflow. Changing a rule means editing the table, not hunting through prompts.
+- **Main agent controller** (`scripts/workflow_agent.py`): Reads current state, dispatches the current step, collects results, and routes through the transition table. It does not invent new workflow branches.
+
+Review steps (e.g. acceptance review) are treated as **subagent as function** calls: each review adapter receives a typed input packet, returns a schema-validated structured output, and is rejected if the decision doesn't align with the allowed set or the artifact fingerprint doesn't match.
+
+The **transition table** in `scripts/_workflow_playbook.py` defines every valid `(current_step, result) -> (next_step, side_effects)` tuple. The engine in `scripts/_workflow_engine.py` enforces that no step can advance through an unknown transition.
+
 ## Quick Start / Default Path
 
 Default path:

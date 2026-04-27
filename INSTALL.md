@@ -13,6 +13,18 @@
 - 静默改写用户模板结构
 - 删除框架渲染部件来“定制功能”
 
+## 1.1 控制平面架构 (Phase 2)
+
+goEasyYourReport 第二阶段的工作流采用 **framework + playbook + main agent controller** 三层拆分：
+
+- **framework**（`scripts/_workflow_*.py`）：拥有 transition table、blocker taxonomy、artifact invalidation rules 和 state schema。framework 定义流程推进规则，不关心报告业务细节。
+- **playbook**（`scripts/_workflow_playbook.py`）：声明该报告工作流的 step 序列和 transition 映射。它是可审计的流程定义。
+- **main agent controller**（`scripts/workflow_agent.py`）：读状态、查 playbook、执行 step、处理 blocker。不再拥有自由发明流程分支的权力。
+
+审核类 step（如 acceptance review）通过 **subagent as function** 适配器调用：固定输入 schema、固定允许的 decision 集合、输出 schema 和 fingerprint 校验。适配器不把自然语言原样传给 transition engine。
+
+**transition table** 在 `scripts/_workflow_playbook.py` 中以数据形式显式定义，engine 在 `scripts/_workflow_engine.py` 中强制校验未知 transition 不可通过。
+
 ## 2. Host Requirements
 - Python `>=3.11`
 - `uv`
