@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from scripts._shared import dump_json, dump_yaml, load_json, load_yaml
+from scripts._workflow_state import default_runtime_state
 
 
 DEFAULT_PRIMARY_TEMPLATE = "./templates/template.user.docx"
 
 
 def default_task_contract() -> dict[str, object]:
+    engine_runtime = default_runtime_state()
     return {
         "schema": {
             "kind": "report_task",
@@ -44,7 +46,28 @@ def default_task_contract() -> dict[str, object]:
             "workflow_config": "./workflow.json",
             "template_plan": "./config/template.plan.json",
             "field_binding": "./config/field.binding.json",
-            "next_step": "prepare",
+            "preview_output": "./out/preview.docx",
+            "semantic_preview_output": "./out/semantic-preview.docx",
+            "preview_review": "",
+            "preview_review_status": "unknown",
+            "preview_review_basis": {},
+            "redacted_verify": "",
+            "redacted_verify_status": "unknown",
+            "redacted_verify_fingerprint": "",
+            "acceptance_review": "",
+            "acceptance_status": "unknown",
+            "accepted_redacted_fingerprint": "",
+            "retry_exhaustion": {"status": "clear", "count": 0},
+            "handoff_status": "",
+            "post_inject_check": {},
+            "next_step": engine_runtime.pop("next_step", "prepare"),
+            "current_step": engine_runtime.pop("current_step", "prepare"),
+            "last_result": engine_runtime.pop("last_result", ""),
+            "active_blockers": engine_runtime.pop("active_blockers", []),
+            "artifacts": engine_runtime.pop("artifacts", {}),
+            "approvals": engine_runtime.pop("approvals", {}),
+            "retries": engine_runtime.pop("retries", {}),
+            "handoff": engine_runtime.pop("handoff", {}),
         },
     }
 

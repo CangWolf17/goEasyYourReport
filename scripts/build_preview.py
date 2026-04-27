@@ -21,6 +21,7 @@ from scripts._preview_pairing import (
     normalize_repo_relative,
     recommendation_fingerprint,
 )
+from scripts._semantic_preview import build_semantic_preview
 from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path
 from scripts._task_contract import load_task_contract
 
@@ -83,6 +84,7 @@ def build_summary(
     task_contract: dict[str, object],
     template_recommendation: dict[str, object] | None = None,
     pairing: dict[str, object] | None = None,
+    semantic_preview: dict[str, object] | None = None,
 ) -> dict[str, object]:
     anchors = plan.get("anchors", {})
     if not isinstance(anchors, dict):
@@ -189,11 +191,18 @@ def build_summary(
         "version": "1.0",
         "template": plan["selection"]["primary_template"],
         "preview": preview_relative,
+        "semantic_preview": semantic_preview or {},
         "summary": summary_relative,
         "task_contract": {
             "stage": task_contract["task"]["stage"],
             "ready_to_write": task_contract["task"]["ready_to_write"],
             "next_step": task_contract["runtime"]["next_step"],
+            "preview_review_status": task_contract["runtime"].get(
+                "preview_review_status", "unknown"
+            ),
+            "acceptance_status": task_contract["runtime"].get(
+                "acceptance_status", "unknown"
+            ),
         },
         "report_decisions": task_contract.get("decisions", {}),
         "regions": plan.get("regions", {}),
@@ -350,9 +359,16 @@ def main() -> int:
         task_contract,
         template_recommendation,
         pairing,
+        build_semantic_preview(Path(args.project_root).resolve(), plan),
     )
     dump_json(summary_path, summary)
-    emit_json({"preview": str(preview_path), "summary": str(summary_path)})
+    emit_json(
+        {
+            "preview": str(preview_path),
+            "summary": str(summary_path),
+            "semantic_preview": summary["semantic_preview"]["path"],
+        }
+    )
     return 0
 
 

@@ -19,12 +19,22 @@ from scripts._global_defaults import (
     seed_missing_project_defaults,
 )
 from scripts._preview_pairing import evaluate_preview_pair_state
-from scripts._shared import dump_json, emit_json, load_json, project_path, run_python_script
+from scripts._shared import dump_json, emit_json, import_docx, load_json, project_path, run_python_script
 from scripts._task_contract import (
     dump_task_contract,
     load_task_contract,
     sync_template_authority_mirrors,
 )
+from scripts._workflow_policy import (
+    build_precondition_issues,
+    compute_preview_review,
+    current_fingerprint,
+    inject_precondition_issues,
+    rerender_target_next_step,
+    review_precondition_issues,
+)
+from scripts._workflow_engine import advance_step
+from scripts._workflow_state import default_runtime_state
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -75,6 +85,9 @@ def summarize_task_contract(task_contract: dict[str, object]) -> dict[str, objec
         "stage": task.get("stage"),
         "ready_to_write": task.get("ready_to_write"),
         "next_step": runtime.get("next_step"),
+        "preview_review_status": runtime.get("preview_review_status"),
+        "acceptance_status": runtime.get("acceptance_status"),
+        "redacted_verify_status": runtime.get("redacted_verify_status"),
     }
 
 
@@ -118,6 +131,31 @@ def persist_task_contract(
     return task_contract
 
 
+def apply_step_result(
+    project_root: Path,
+    task_contract: dict[str, object],
+    *,
+    step_name: str,
+    result: str,
+    runtime_updates: dict[str, object] | None = None,
+) -> dict[str, object]:
+    runtime = dict(task_contract.get("runtime", {}))
+    engine_runtime = default_runtime_state()
+    for key in ("current_step", "last_result", "active_blockers", "artifacts", "approvals", "retries", "handoff"):
+        runtime.setdefault(key, engine_runtime[key])
+    runtime["current_step"] = step_name
+    runtime = advance_step(runtime, result=result)
+    if runtime_updates:
+        runtime.update(runtime_updates)
+    return persist_task_contract(
+        project_root,
+        ready_to_write=bool(runtime.pop("ready_to_write", task_contract["task"].get("ready_to_write", False))),
+        next_step=str(runtime["next_step"]),
+        runtime_updates=runtime,
+        sync_summary=True,
+    )
+
+
 def sync_prepare_task_contract(
     project_root: Path, warnings: list[object]
 ) -> dict[str, object]:
@@ -142,9 +180,41 @@ def sync_prepare_task_contract(
         next_step=next_step,
         runtime_updates={
             "preview_output": "./out/preview.docx",
+            "semantic_preview_output": "./out/semantic-preview.docx",
             "template_plan": "./config/template.plan.json",
             "field_binding": "./config/field.binding.json",
         },
+        sync_summary=True,
+    )
+
+
+def persist_preview_review_state(
+    project_root: Path,
+    task_contract: dict[str, object],
+    summary_payload: dict[str, object],
+    pair_state_payload: dict[str, object],
+    *,
+    verify_ok: bool,
+) -> dict[str, object]:
+    preview_review = compute_preview_review(
+        project_root,
+        task_contract,
+        summary_payload,
+        pair_state_payload,
+        verify_ok=verify_ok,
+    )
+    return persist_task_contract(
+        project_root,
+        runtime_updates={
+            "preview_review": preview_review["path"],
+            "preview_review_status": preview_review["status"],
+            "preview_review_basis": {
+                "cause": preview_review["cause"],
+                **preview_review["freshness_basis"],
+            },
+            "semantic_preview_output": preview_review["path"],
+        },
+        next_step=preview_review["next_step"],
         sync_summary=True,
     )
 
@@ -475,6 +545,13 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
     pair_state_payload = preview_pair_state(summary_payload, project_root)
     profile = report_profile(task_contract)
     task_contract = sync_prepare_task_contract(project_root, blocking)
+    task_contract = persist_preview_review_state(
+        project_root,
+        task_contract,
+        summary_payload,
+        pair_state_payload,
+        verify_ok=True,
+    )
     summary = (
         "Project prepared in body_only profile; review blocking confirmations only"
         if profile == "body_only" and blocking
@@ -516,12 +593,14 @@ def handle_prepare(project_root: Path) -> tuple[int, dict[str, object]]:
             "workflow": "./workflow.json",
             "preview": repo_relative(project_root, preview_path),
             "preview_summary": repo_relative(project_root, summary_path),
+            "semantic_preview": str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx")),
             "private_fields": fields_result["json"],
             "template_recommendation": "./logs/template_style_recommendation.json"
             if project_path(project_root, "logs/template_style_recommendation.json").exists()
             else "",
             "pairing": pair_state_payload.get("pairing") or {},
             "pair_state": pair_state_payload["pair_state"],
+            "preview_review_status": task_contract["runtime"].get("preview_review_status", "unknown"),
         },
         issues=issues + preview_pair_issues(pair_state_payload),
         warnings=warnings,
@@ -576,18 +655,33 @@ def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
         isinstance(summary_payload.get("template_recommendation"), dict)
         and summary_payload["template_recommendation"].get("pending_acceptance")
     )
-    if blocking or recommendation_pending or pair_state_payload["pair_state"] != "matched":
+    task_contract = persist_preview_review_state(
+        project_root,
+        task_contract,
+        summary_payload,
+        pair_state_payload,
+        verify_ok=True,
+    )
+    preview_review_status = task_contract["runtime"].get("preview_review_status", "unknown")
+    if (
+        blocking
+        or recommendation_pending
+        or pair_state_payload["pair_state"] != "matched"
+        or preview_review_status != "pass"
+    ):
         task_contract = sync_prepare_task_contract(project_root, blocking)
         return 1, response(
             "ready",
             "needs_user_confirmation",
             "Ready gate blocked by unresolved confirmations"
             if blocking
-            else "Ready gate blocked until recommendation and preview artifacts are current",
+            else "Ready gate blocked until semantic preview, recommendation, and preview artifacts are current",
             artifacts={
                 "preview_summary": "./out/preview.summary.json",
+                "semantic_preview": str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx")),
                 "pairing": pair_state_payload.get("pairing") or {},
                 "pair_state": pair_state_payload["pair_state"],
+                "preview_review_status": preview_review_status,
             },
             issues=[
                 {
@@ -601,11 +695,21 @@ def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
                 if recommendation_pending
                 else []
             )
+            + (
+                [
+                    {
+                        "kind": "preview_review_pending",
+                        "details": task_contract["runtime"].get("preview_review_basis", {}).get("cause", "semantic preview requires revision"),
+                    }
+                ]
+                if preview_review_status != "pass"
+                else []
+            )
             + preview_pair_issues(pair_state_payload),
             warnings=warnings,
             next_step="preview"
             if recommendation_pending or pair_state_payload["pair_state"] != "matched"
-            else str(task_contract["runtime"]["next_step"]),
+            else str(task_contract["runtime"].get("next_step", "preview")),
         )
 
     task_contract = persist_task_contract(
@@ -622,8 +726,10 @@ def handle_ready(project_root: Path) -> tuple[int, dict[str, object]]:
         "Report task marked ready_to_write",
         artifacts={
             "preview_summary": "./out/preview.summary.json",
+            "semantic_preview": str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx")),
             "pairing": pair_state_payload.get("pairing") or {},
             "pair_state": pair_state_payload["pair_state"],
+            "preview_review_status": preview_review_status,
         },
         warnings=(
             (["body_only profile active; cover-field noise treated as advisory"] if profile == "body_only" else [])
@@ -644,11 +750,20 @@ def handle_status(project_root: Path) -> tuple[int, dict[str, object]]:
         pair_state_payload = preview_pair_state(summary_payload, project_root)
         artifacts["pairing"] = pair_state_payload.get("pairing") or {}
         artifacts["pair_state"] = pair_state_payload["pair_state"]
+        artifacts["semantic_preview"] = str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx"))
         if project_path(project_root, "logs/template_style_recommendation.json").exists():
             artifacts["template_recommendation"] = "./logs/template_style_recommendation.json"
         blocking = blocking_review_items(summary_payload)
         decisions = decision_review_items(summary_payload)
         warnings = advisory_review_warnings(summary_payload)
+        task_contract = persist_preview_review_state(
+            project_root,
+            task_contract,
+            summary_payload,
+            pair_state_payload,
+            verify_ok=True,
+        )
+        artifacts["preview_review_status"] = task_contract["runtime"].get("preview_review_status", "unknown")
         ready_to_write = bool(task_contract.get("task", {}).get("ready_to_write", False))
         profile = report_profile(task_contract)
         if ready_to_write and not blocking:
@@ -731,10 +846,19 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
     warnings = advisory_review_warnings(summary_payload)
     decisions = decision_review_items(summary_payload)
     needs_confirmation = blocking_review_items(summary_payload)
+    task_contract = load_task_contract(task_contract_path(project_root))
+    task_contract = persist_preview_review_state(
+        project_root,
+        task_contract,
+        summary_payload,
+        pair_state_payload,
+        verify_ok=verify_result["returncode"] == 0,
+    )
     if (
         verify_result["returncode"] == 0
         and not needs_confirmation
         and pair_state_payload["pair_state"] == "matched"
+        and task_contract["runtime"].get("preview_review_status") == "pass"
     ):
         task_contract = sync_prepare_task_contract(project_root, [])
         return 0, response(
@@ -744,8 +868,10 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
             artifacts={
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
+                "semantic_preview": str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx")),
                 "pairing": pair_state_payload.get("pairing") or {},
                 "pair_state": pair_state_payload["pair_state"],
+                "preview_review_status": task_contract["runtime"].get("preview_review_status", "unknown"),
             },
             issues=[
                 {
@@ -759,7 +885,6 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
         )
 
     if verify_result["returncode"] == 0:
-        task_contract = sync_prepare_task_contract(project_root, needs_confirmation)
         return 1, response(
             "preview",
             "needs_user_confirmation",
@@ -767,8 +892,10 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
             artifacts={
                 "preview": "./out/preview.docx",
                 "preview_summary": "./out/preview.summary.json",
+                "semantic_preview": str(summary_payload.get("semantic_preview", {}).get("path", "./out/semantic-preview.docx")),
                 "pairing": pair_state_payload.get("pairing") or {},
                 "pair_state": pair_state_payload["pair_state"],
+                "preview_review_status": task_contract["runtime"].get("preview_review_status", "unknown"),
             },
             issues=[
                 {
@@ -777,6 +904,23 @@ def handle_preview(project_root: Path) -> tuple[int, dict[str, object]]:
                 }
                 for item in needs_confirmation
             ]
+            + [
+                {
+                    "kind": "decision_required",
+                    "details": item,
+                }
+                for item in decisions
+            ]
+            + (
+                [
+                    {
+                        "kind": "preview_review_pending",
+                        "details": task_contract["runtime"].get("preview_review_basis", {}).get("cause", "semantic preview requires revision"),
+                    }
+                ]
+                if task_contract["runtime"].get("preview_review_status") != "pass"
+                else []
+            )
             + preview_pair_issues(pair_state_payload),
             warnings=warnings,
             next_step="preview"
@@ -832,6 +976,73 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
                     "details": "report.task.yaml indicates materials or confirmations are incomplete",
                 }
             ],
+            next_step=str(task_contract["runtime"]["next_step"]),
+        )
+
+    summary_path = project_path(project_root, "out/preview.summary.json")
+    if not summary_path.exists():
+        task_contract = persist_task_contract(
+            project_root,
+            stage="collecting_materials",
+            ready_to_write=False,
+            needs_user_input=False,
+            next_step="prepare",
+            sync_summary=True,
+        )
+        return 1, response(
+            "build",
+            "needs_agent_handoff",
+            "Build blocked until an approved preview summary exists",
+            issues=[
+                {
+                    "kind": "missing_preview_summary",
+                    "details": "run prepare or preview to regenerate semantic preview evidence",
+                }
+            ],
+            next_step=str(task_contract["runtime"]["next_step"]),
+        )
+
+    summary_payload = load_json(summary_path)
+    pair_state_payload = preview_pair_state(summary_payload, project_root)
+    preview_issues = build_precondition_issues(
+        project_root,
+        task_contract,
+        summary_payload,
+        pair_state_payload,
+    )
+    if preview_issues:
+        next_step = (
+            "review_preview_summary"
+            if any(issue["kind"] == "preview_review_not_passed" for issue in preview_issues)
+            else "preview"
+        )
+        status = (
+            "needs_user_confirmation"
+            if next_step == "review_preview_summary"
+            else "needs_agent_handoff"
+        )
+        task_contract = persist_task_contract(
+            project_root,
+            stage="collecting_materials",
+            ready_to_write=False,
+            needs_user_input=status == "needs_user_confirmation",
+            next_step=next_step,
+            sync_summary=True,
+        )
+        return 1, response(
+            "build",
+            status,
+            "Build blocked until the approved preview remains current",
+            artifacts={
+                "preview_summary": "./out/preview.summary.json",
+                "semantic_preview": str(
+                    summary_payload.get("semantic_preview", {}).get(
+                        "path", "./out/semantic-preview.docx"
+                    )
+                ),
+                "pair_state": pair_state_payload.get("pair_state", "missing"),
+            },
+            issues=preview_issues + preview_pair_issues(pair_state_payload),
             next_step=str(task_contract["runtime"]["next_step"]),
         )
 
@@ -912,7 +1123,15 @@ def handle_build(project_root: Path) -> tuple[int, dict[str, object]]:
         stage="redacted_built",
         needs_user_input=False,
         next_step="verify",
-        runtime_updates={"redacted_output": "./out/redacted.docx"},
+        runtime_updates={
+            "redacted_output": "./out/redacted.docx",
+            "redacted_verify": "",
+            "redacted_verify_status": "unknown",
+            "redacted_verify_fingerprint": "",
+            "acceptance_review": "",
+            "acceptance_status": "unknown",
+            "accepted_redacted_fingerprint": "",
+        },
         sync_summary=True,
     )
 
@@ -935,7 +1154,26 @@ def handle_verify(project_root: Path, target: str) -> tuple[int, dict[str, objec
     payload = result["json"]
     artifacts = {"checked": repo_relative(project_root, docx_arg)}
     if payload.get("ok"):
-        next_step = "build" if target == "preview" else "inject"
+        next_step = "build" if target == "preview" else "review"
+        if target == "redacted":
+            fingerprint = current_fingerprint(project_root, "./out/redacted.docx")
+            verify_artifact_path = project_path(project_root, "out/_internal/redacted-verify.json")
+            dump_json(verify_artifact_path, payload)
+            task_contract = persist_task_contract(
+                project_root,
+                stage="awaiting_acceptance_review",
+                needs_user_input=False,
+                next_step="review",
+                runtime_updates={
+                    "redacted_verify": "./out/_internal/redacted-verify.json",
+                    "redacted_verify_status": "pass",
+                    "redacted_verify_fingerprint": fingerprint or "",
+                },
+                sync_summary=True,
+            )
+            artifacts["verify_artifact"] = "./out/_internal/redacted-verify.json"
+            artifacts["target_fingerprint"] = fingerprint or ""
+            next_step = str(task_contract["runtime"]["next_step"])
         return 0, response(
             "verify",
             "ok",
@@ -954,9 +1192,109 @@ def handle_verify(project_root: Path, target: str) -> tuple[int, dict[str, objec
     )
 
 
+def handle_review(project_root: Path) -> tuple[int, dict[str, object]]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    fingerprint = current_fingerprint(project_root, "./out/redacted.docx")
+    issues = review_precondition_issues(task_contract, fingerprint)
+    if issues:
+        return 1, response(
+            "review",
+            "needs_agent_handoff",
+            "Acceptance review blocked until the current redacted artifact has a passing verify result",
+            artifacts={"redacted": "./out/redacted.docx"},
+            issues=issues,
+            next_step="verify",
+        )
+
+    result = run_repo_script("review_acceptance.py", project_root)
+    if result["json"] is None:
+        return error_from_script("review", "review_acceptance.py", result)
+
+    payload = result["json"]
+    if result["returncode"] == 2:
+        return 2, response(
+            "review",
+            "error",
+            "Acceptance review runtime is unavailable",
+            artifacts={
+                "review_packet": str(payload.get("review_packet", "")),
+                "worker_output": str(payload.get("worker_output", "")),
+            },
+            issues=[
+                {
+                    "kind": str(payload.get("kind", "review_runtime_unavailable")),
+                    "details": payload.get("details", ""),
+                }
+            ],
+            next_step="provide_review_worker_output",
+        )
+
+    acceptance_status = str(payload.get("status", "unknown"))
+    rerender_target = str(payload.get("rerender_target", "none"))
+    next_step = "inject" if acceptance_status == "pass" else rerender_target_next_step(rerender_target, acceptance_status)
+    stage = (
+        "awaiting_private_injection"
+        if acceptance_status == "pass"
+        else "awaiting_user_decision"
+        if acceptance_status == "needs_user_decision"
+        else "rerender_required"
+    )
+    retry_exhaustion = payload.get("retry_exhaustion", {"status": "clear"})
+    task_contract = persist_task_contract(
+        project_root,
+        stage=stage,
+        needs_user_input=acceptance_status == "needs_user_decision",
+        next_step=next_step,
+        runtime_updates={
+            "acceptance_review": str(payload.get("acceptance_review", "./out/acceptance-review.json")),
+            "acceptance_status": acceptance_status,
+            "accepted_redacted_fingerprint": fingerprint if acceptance_status == "pass" else "",
+            "retry_exhaustion": retry_exhaustion,
+            "handoff_status": str(payload.get("handoff_status", "")),
+        },
+        sync_summary=True,
+    )
+    return result["returncode"], response(
+        "review",
+        "ok" if acceptance_status == "pass" else "needs_user_confirmation" if acceptance_status == "needs_user_decision" else "needs_agent_handoff",
+        "Acceptance review passed"
+        if acceptance_status == "pass"
+        else "Acceptance review requires user decision"
+        if acceptance_status == "needs_user_decision"
+        else "Acceptance review requires rerender",
+        artifacts={
+            "acceptance_review": str(payload.get("acceptance_review", "./out/acceptance-review.json")),
+            "review_packet": str(payload.get("review_packet", "./out/_internal/review-packet.json")),
+            "worker_output": str(payload.get("worker_output", "./out/_internal/review-worker-output.json")),
+            "target_fingerprint": str(payload.get("target_fingerprint", "")),
+        },
+        issues=[
+            {"kind": "acceptance_blocking_finding", "details": item}
+            for item in payload.get("blocking_findings", [])
+        ]
+        + [
+            {"kind": "acceptance_decision_required", "details": item}
+            for item in payload.get("needs_decision", [])
+        ],
+        next_step=str(task_contract["runtime"]["next_step"]),
+    )
+
+
 def handle_inject(
     project_root: Path, source: str | None
 ) -> tuple[int, dict[str, object]]:
+    task_contract = load_task_contract(task_contract_path(project_root))
+    fingerprint = current_fingerprint(project_root, "./out/redacted.docx")
+    precondition_issues = inject_precondition_issues(task_contract, fingerprint)
+    if precondition_issues:
+        return 1, response(
+            "inject",
+            "needs_agent_handoff",
+            "Inject blocked until acceptance review passes for the current redacted artifact",
+            artifacts={"redacted": "./out/redacted.docx"},
+            issues=precondition_issues,
+            next_step="review",
+        )
     extra_args: list[str] = []
     if source:
         extra_args.extend(["--source", source])
@@ -987,6 +1325,48 @@ def handle_inject(
             ],
             next_step="resolve_private_fields",
         )
+
+    private_output = project_path(
+        project_root, str(payload.get("private_output", "out/private.docx")).replace("./", "")
+    )
+    post_inject_check: dict[str, object]
+    try:
+        if not private_output.exists():
+            raise FileNotFoundError(str(private_output))
+        import_docx().Document(private_output)
+        post_inject_check = {
+            "status": "pass",
+            "path": repo_relative(project_root, private_output),
+        }
+    except Exception as exc:
+        post_inject_check = {
+            "status": "fail",
+            "path": repo_relative(project_root, private_output),
+            "details": str(exc),
+        }
+        persist_task_contract(
+            project_root,
+            runtime_updates={"post_inject_check": post_inject_check},
+            sync_summary=True,
+        )
+        return 1, response(
+            "inject",
+            "needs_agent_handoff",
+            "Private output generated but failed post-inject validation",
+            artifacts=artifacts,
+            issues=[{"kind": "post_inject_check_failed", "details": str(exc)}],
+            next_step="inspect_private_output",
+        )
+
+    persist_task_contract(
+        project_root,
+        stage="complete",
+        needs_user_input=False,
+        next_step="done",
+        runtime_updates={"post_inject_check": post_inject_check},
+        sync_summary=True,
+    )
+    artifacts["post_inject_check"] = post_inject_check
 
     return 0, response(
         "inject",
@@ -1027,7 +1407,7 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
-    for action_name in ("bootstrap", "prepare", "ready", "status", "preview", "build"):
+    for action_name in ("bootstrap", "prepare", "ready", "status", "preview", "build", "review"):
         action_parser = subparsers.add_parser(action_name)
         action_parser.add_argument("--project-root", default=".")
 
@@ -1079,6 +1459,8 @@ def main() -> int:
         exit_code, payload = handle_preview(project_root)
     elif args.action == "build":
         exit_code, payload = handle_build(project_root)
+    elif args.action == "review":
+        exit_code, payload = handle_review(project_root)
     elif args.action == "verify":
         exit_code, payload = handle_verify(project_root, args.target)
     elif args.action == "inject":
